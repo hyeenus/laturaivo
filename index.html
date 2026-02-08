@@ -1,0 +1,2260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Laturaivo - Finnish Ski Beat 'Em Up</title>
+<style>
+  :root {
+    --sky-deep: #1a2456;
+    --sky-mid: #0f5e9c;
+    --snow: #ffffff;
+    --snow-shadow: #d2ebf5;
+    --forest-dark: #0a3200;
+    --forest-mid: #145214;
+    --horizon-orange: #ff7b00;
+    --horizon-purple: #8a2be2;
+    --ui-blue: #1fb7ff;
+    --ui-red: #ff4b4b;
+    --ui-yellow: #ffd53d;
+  }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: #0b1026;
+    color: #e8f7ff;
+    font-family: "Courier New", monospace;
+    overflow: hidden;
+  }
+
+  #wrap {
+    width: 100%;
+    height: 100%;
+    display: grid;
+    place-items: center;
+  }
+
+  canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    border: 3px solid #0d1b3d;
+    background: #0b1026;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="960" height="540"></canvas>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  const VIEW = { w: 960, h: 540 };
+  const TRACK = { top: 280, bottom: 520 };
+  const TRACK_SOURCE_HEIGHT = 276;
+  const TRACK_TOP_PAD = 0;
+  const TRACK_BOTTOM_PAD = 0;
+  const COLLISION_ALPHA_THRESHOLD = 110;
+
+  const COLORS = {
+    skyDeep: '#1a2456',
+    skyMid: '#0f5e9c',
+    snow: '#ffffff',
+    snowShadow: '#d2ebf5',
+    forestDark: '#0a3200',
+    forestMid: '#145214',
+    horizonOrange: '#ff7b00',
+    horizonPurple: '#8a2be2',
+    uiBlue: '#1fb7ff',
+    uiRed: '#ff4b4b',
+    uiYellow: '#ffd53d',
+    playerRed: '#ff3b3b',
+    playerBlue: '#3ba7ff',
+    playerDark: '#2b2b2b',
+    enemyPink: '#ff66cc',
+    enemyYellow: '#ffd53d',
+    enemyOrange: '#ff9f3d',
+    enemyGreen: '#46e37d',
+    enemyPurple: '#9b6bff',
+    enemyGray: '#8aa3b2',
+    bossSteel: '#7f8fa5'
+  };
+
+  const rand = (min, max) => min + Math.random() * (max - min);
+  const randi = (min, max) => Math.floor(rand(min, max + 1));
+  const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  let scale = 1;
+  const resize = () => {
+    const sx = window.innerWidth / VIEW.w;
+    const sy = window.innerHeight / VIEW.h;
+    scale = Math.min(sx, sy);
+    canvas.style.width = `${VIEW.w * scale}px`;
+    canvas.style.height = `${VIEW.h * scale}px`;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = VIEW.w * dpr;
+    canvas.height = VIEW.h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  };
+  window.addEventListener('resize', resize);
+  resize();
+
+  const keys = {};
+  const pressed = new Set();
+  window.addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k)) {
+      e.preventDefault();
+    }
+    if (!keys[k]) {
+      pressed.add(k);
+    }
+    keys[k] = true;
+  });
+  window.addEventListener('keyup', (e) => {
+    const k = e.key.toLowerCase();
+    keys[k] = false;
+  });
+  const consumePressed = (k) => {
+    if (pressed.has(k)) {
+      pressed.delete(k);
+      return true;
+    }
+    return false;
+  };
+
+  const audio = {
+    ctx: null,
+    muted: false,
+    main: new Audio('assets/audio/music1.mp3'),
+    boss: new Audio('assets/audio/music2.mp3'),
+    win: new Audio('assets/audio/music3.mp3')
+  };
+  audio.main.loop = true;
+  audio.boss.loop = true;
+  audio.win.loop = true;
+  audio.main.volume = 0.45;
+  audio.boss.volume = 0.5;
+  audio.win.volume = 0.4;
+
+  const initAudio = () => {
+    if (!audio.ctx) {
+      audio.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (audio.ctx.state === 'suspended') {
+      audio.ctx.resume();
+    }
+    if (!audio.muted) {
+      audio.main.play().catch(() => {});
+    }
+  };
+
+  const stopAllMusic = () => {
+    [audio.main, audio.boss, audio.win].forEach(track => {
+      track.pause();
+      track.currentTime = 0;
+    });
+  };
+
+  const playMusic = (track) => {
+    stopAllMusic();
+    if (!audio.muted) {
+      track.play().catch(() => {});
+    }
+  };
+
+  const playSfx = (type) => {
+    if (!audio.ctx || audio.muted) return;
+    const now = audio.ctx.currentTime;
+    const osc = audio.ctx.createOscillator();
+    const gain = audio.ctx.createGain();
+    const filter = audio.ctx.createBiquadFilter();
+
+    osc.type = 'square';
+    let freq = 440;
+    let dur = 0.15;
+
+    if (type === 'strike') { freq = 520; dur = 0.12; }
+    if (type === 'slash') { freq = 260; dur = 0.35; osc.type = 'sawtooth'; }
+    if (type === 'boost') { freq = 720; dur = 0.3; osc.type = 'triangle'; }
+    if (type === 'hit') { freq = 180; dur = 0.18; osc.type = 'square'; }
+    if (type === 'hurt') { freq = 120; dur = 0.3; osc.type = 'sawtooth'; }
+    if (type === 'power') { freq = 620; dur = 0.2; osc.type = 'triangle'; }
+
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(1200, now);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.25, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    osc.frequency.setValueAtTime(freq, now);
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(audio.ctx.destination);
+    osc.start(now);
+    osc.stop(now + dur);
+  };
+
+  const spriteDefs = {
+    skier: {
+      src: 'graphics/processed/skier_fix.png',
+      targetH: 48,
+      anchorY: 0.86,
+      frameRects: [
+        { x: 43, y: 6, w: 323, h: 281 },
+        { x: 414, y: 4, w: 370, h: 285 },
+        { x: 784, y: 4, w: 392, h: 285 },
+        { x: 1176, y: 4, w: 327, h: 285 }
+      ]
+    },
+    skier_hit: {
+      src: 'graphics/skier_hits.png',
+      targetH: 48,
+      anchorY: 0.86,
+      frameRects: [
+        { x: 31, y: 349, w: 349, h: 336 },
+        { x: 403, y: 351, w: 365, h: 334 },
+        { x: 768, y: 353, w: 384, h: 332 },
+        { x: 1152, y: 353, w: 367, h: 332 }
+      ]
+    },
+    long_pole_hit: {
+      src: 'graphics/long_pole_hit.png',
+      targetH: 48,
+      anchorY: 0.86,
+      frameRects: [
+        { x: 21, y: 391, w: 363, h: 267 },
+        { x: 384, y: 388, w: 384, h: 269 },
+        { x: 768, y: 391, w: 384, h: 266 },
+        { x: 1152, y: 390, w: 366, h: 268 }
+      ]
+    },
+    skier_with_gun: {
+      src: 'graphics/skier_with_gun.png',
+      targetH: 48,
+      anchorY: 0.86,
+      frameRects: [
+        { x: 21, y: 383, w: 363, h: 290 },
+        { x: 384, y: 383, w: 384, h: 290 },
+        { x: 768, y: 383, w: 384, h: 290 },
+        { x: 1152, y: 383, w: 331, h: 290 }
+      ]
+    },
+    skier_shooting: {
+      src: 'graphics/skier_shooting.png',
+      targetH: 48,
+      anchorY: 0.86,
+      frameRects: [
+        { x: 21, y: 383, w: 363, h: 290 },
+        { x: 384, y: 383, w: 384, h: 290 },
+        { x: 768, y: 383, w: 384, h: 290 },
+        { x: 1152, y: 383, w: 331, h: 290 }
+      ]
+    },
+    slalom_slash: {
+      src: 'graphics/slalom_slash.png',
+      targetH: 48,
+      anchorY: 0.86,
+      frameRects: [
+        { x: 17, y: 294, w: 367, h: 397 },
+        { x: 384, y: 287, w: 384, h: 404 },
+        { x: 768, y: 373, w: 384, h: 318 },
+        { x: 1152, y: 293, w: 331, h: 398 }
+      ]
+    },
+    rabbit: {
+      src: 'graphics/rabbit_animation.png',
+      targetH: 22,
+      anchorY: 0.75,
+      frameRects: [
+        { x: 0, y: 347, w: 304, h: 153 },
+        { x: 316, y: 347, w: 304, h: 153 },
+        { x: 650, y: 347, w: 282, h: 153 },
+        { x: 957, y: 347, w: 290, h: 153 }
+      ]
+    },
+    bird: {
+      src: 'graphics/bird_2.png',
+      targetH: 24,
+      anchorY: 0.55,
+      frameRects: [
+        { x: 252, y: 370, w: 311, h: 230 },
+        { x: 979, y: 385, w: 317, h: 215 }
+      ]
+    },
+    hiker: {
+      src: 'graphics/hiker.png',
+      targetH: 44,
+      anchorY: 0.9,
+      frameRects: [{ x: 488, y: 190, w: 557, h: 554 }]
+    },
+    child: {
+      src: 'graphics/child_animation.png',
+      targetH: 38,
+      anchorY: 0.88,
+      frameRects: [
+        { x: 66, y: 298, w: 314, h: 378 },
+        { x: 435, y: 298, w: 308, h: 381 },
+        { x: 792, y: 305, w: 302, h: 372 },
+        { x: 1143, y: 299, w: 319, h: 377 }
+      ]
+    },
+    fatbiker: {
+      src: 'graphics/fatbiker.png',
+      targetH: 42,
+      anchorY: 0.88,
+      frameRects: [{ x: 408, y: 194, w: 648, h: 549 }]
+    },
+    reindeer: {
+      src: 'graphics/reindeer_animation.png',
+      targetH: 46,
+      anchorY: 0.82,
+      frameRects: [
+        { x: 58, y: 373, w: 335, h: 244 },
+        { x: 411, y: 373, w: 365, h: 244 },
+        { x: 792, y: 376, w: 351, h: 240 },
+        { x: 1167, y: 376, w: 338, h: 238 }
+      ]
+    },
+    snowmobile: {
+      src: 'graphics/snow_mobile_2.png',
+      targetH: 44,
+      anchorY: 0.78,
+      frameRects: [{ x: 163, y: 184, w: 1294, h: 544 }]
+    },
+    snowgroomer: {
+      src: 'graphics/processed/snow_groomer.png',
+      targetH: 110,
+      anchorY: 0.82,
+      frameRects: [{ x: 96, y: 164, w: 1372, h: 534 }]
+    },
+    collectibles: {
+      src: 'graphics/collectibles_2.png',
+      targetH: 24,
+      anchorY: 0.65,
+      frameRects: [
+        { x: 247, y: 313, w: 209, h: 344 },
+        { x: 649, y: 397, w: 208, h: 261 },
+        { x: 1042, y: 382, w: 286, h: 276 }
+      ]
+    },
+    snowball_proj: {
+      src: 'graphics/snowball.png',
+      targetH: 22,
+      anchorY: 0.5,
+      frameRects: [{ x: 455, y: 245, w: 697, h: 526 }]
+    },
+    cannon_round: {
+      src: 'graphics/snow_cannon_round.png',
+      targetH: 26,
+      anchorY: 0.5,
+      frameRects: [{ x: 396, y: 285, w: 713, h: 349 }]
+    },
+    long_pole_powerup: {
+      src: 'graphics/long_pole_powerup.png',
+      targetH: 24,
+      anchorY: 0.7,
+      frameRects: [{ x: 445, y: 284, w: 631, h: 440 }]
+    },
+    gun_powerup: {
+      src: 'graphics/gun.png',
+      targetH: 24,
+      anchorY: 0.7,
+      frameRects: [{ x: 428, y: 320, w: 716, h: 329 }]
+    },
+    bullet_proj: {
+      src: 'graphics/bullet.png',
+      targetH: 12,
+      anchorY: 0.5,
+      frameRects: [{ x: 584, y: 308, w: 416, h: 141 }]
+    }
+  };
+
+  const backgroundFiles = {
+    main: 'graphics/background_3.png'
+  };
+
+  const sprites = {};
+  const backgrounds = {};
+  let spritesReady = false;
+  let backgroundsReady = false;
+
+  const buildDefaultFrames = (img, count = 1) => {
+    const frames = [];
+    const segW = Math.floor(img.width / count);
+    for (let i = 0; i < count; i++) {
+      const x = i * segW;
+      const w = i === count - 1 ? img.width - x : segW;
+      frames.push({ x, y: 0, w, h: img.height });
+    }
+    return frames;
+  };
+
+  const processRabbitChroma = (img) => {
+    const c = document.createElement('canvas');
+    c.width = img.width;
+    c.height = img.height;
+    const cctx = c.getContext('2d', { willReadFrequently: true });
+    cctx.drawImage(img, 0, 0);
+    const data = cctx.getImageData(0, 0, c.width, c.height);
+    const d = data.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i];
+      const g = d[i + 1];
+      const b = d[i + 2];
+      const max = Math.max(r, g, b);
+      const gray = Math.abs(r - g) < 9 && Math.abs(g - b) < 9 && Math.abs(r - b) < 9;
+      if (gray && max > 205) {
+        d[i + 3] = 0;
+      }
+    }
+    cctx.putImageData(data, 0, 0);
+    return c;
+  };
+
+  const processBorderWhiteChroma = (img, threshold = 245) => {
+    const c = document.createElement('canvas');
+    c.width = img.width;
+    c.height = img.height;
+    const cctx = c.getContext('2d', { willReadFrequently: true });
+    cctx.drawImage(img, 0, 0);
+    const data = cctx.getImageData(0, 0, c.width, c.height);
+    const d = data.data;
+    const w = c.width;
+    const h = c.height;
+    const visited = new Uint8Array(w * h);
+    const q = [];
+
+    const isBg = (idx) => {
+      const a = d[idx + 3];
+      if (a === 0) return true;
+      const r = d[idx];
+      const g = d[idx + 1];
+      const b = d[idx + 2];
+      const gray = Math.abs(r - g) < 10 && Math.abs(g - b) < 10 && Math.abs(r - b) < 10;
+      return gray && r >= threshold && g >= threshold && b >= threshold;
+    };
+
+    const push = (x, y) => {
+      if (x < 0 || x >= w || y < 0 || y >= h) return;
+      const p = y * w + x;
+      if (visited[p]) return;
+      visited[p] = 1;
+      const idx = p * 4;
+      if (!isBg(idx)) return;
+      q.push(p);
+    };
+
+    for (let x = 0; x < w; x++) {
+      push(x, 0);
+      push(x, h - 1);
+    }
+    for (let y = 1; y < h - 1; y++) {
+      push(0, y);
+      push(w - 1, y);
+    }
+
+    while (q.length) {
+      const p = q.pop();
+      const idx = p * 4;
+      d[idx + 3] = 0;
+      const x = p % w;
+      const y = Math.floor(p / w);
+      push(x - 1, y);
+      push(x + 1, y);
+      push(x, y - 1);
+      push(x, y + 1);
+    }
+
+    cctx.putImageData(data, 0, 0);
+    return c;
+  };
+
+  const buildFrameMasks = (source, frames) => {
+    const c = document.createElement('canvas');
+    const cctx = c.getContext('2d', { willReadFrequently: true });
+    return frames.map((frame) => {
+      c.width = frame.w;
+      c.height = frame.h;
+      cctx.clearRect(0, 0, c.width, c.height);
+      cctx.drawImage(source, frame.x, frame.y, frame.w, frame.h, 0, 0, frame.w, frame.h);
+      const data = cctx.getImageData(0, 0, frame.w, frame.h).data;
+      const mask = new Uint8Array(frame.w * frame.h);
+      for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+        mask[p] = data[i + 3] >= COLLISION_ALPHA_THRESHOLD ? 1 : 0;
+      }
+      return mask;
+    });
+  };
+
+  const loadSprites = () => {
+    const names = Object.keys(spriteDefs);
+    let loaded = 0;
+    names.forEach((name) => {
+      const def = spriteDefs[name];
+      const img = new Image();
+      img.src = def.src;
+      img.onload = () => {
+        try {
+          let source = img;
+          try {
+            if (def.process === 'rabbit_chroma') {
+              source = processRabbitChroma(img);
+            } else if (def.process === 'border_white_chroma') {
+              source = processBorderWhiteChroma(img);
+            }
+          } catch (processErr) {
+            source = img;
+            console.warn(`Sprite processing failed for ${name}, using raw image.`, processErr);
+          }
+
+          const frames = def.frameRects && def.frameRects.length
+            ? def.frameRects
+            : buildDefaultFrames(source, def.frames || 1);
+
+          let masks = null;
+          try {
+            masks = buildFrameMasks(source, frames);
+          } catch (maskErr) {
+            masks = null;
+            console.warn(`Mask build failed for ${name}, using non-pixel collision fallback.`, maskErr);
+          }
+
+          sprites[name] = { img: source, frames, def, masks };
+        } catch (err) {
+          const frames = def.frameRects && def.frameRects.length
+            ? def.frameRects
+            : buildDefaultFrames(img, def.frames || 1);
+          sprites[name] = { img, frames, def, masks: null };
+          console.warn(`Sprite load fallback for ${name}.`, err);
+        } finally {
+          loaded += 1;
+          if (loaded === names.length) {
+            spritesReady = true;
+          }
+        }
+      };
+      img.onerror = () => {
+        loaded += 1;
+        if (loaded === names.length) {
+          spritesReady = true;
+        }
+      };
+    });
+  };
+
+  const loadBackgrounds = () => {
+    const names = Object.keys(backgroundFiles);
+    let loaded = 0;
+    names.forEach((name) => {
+      const img = new Image();
+      img.src = backgroundFiles[name];
+      img.onload = () => {
+        backgrounds[name] = img;
+        loaded += 1;
+        if (loaded === names.length) backgroundsReady = true;
+      };
+    });
+  };
+
+  loadSprites();
+  loadBackgrounds();
+
+  const updateTrackBounds = () => {
+    const bg = backgrounds.main;
+    if (!bg) {
+      TRACK.top = 280;
+      TRACK.bottom = 520;
+      return;
+    }
+    const scale = VIEW.h / bg.height;
+    const trackHeight = TRACK_SOURCE_HEIGHT * scale;
+    TRACK.top = clamp(Math.round(VIEW.h - trackHeight + TRACK_TOP_PAD), 0, VIEW.h - 40);
+    TRACK.bottom = clamp(Math.round(VIEW.h - TRACK_BOTTOM_PAD), TRACK.top + 40, VIEW.h);
+  };
+
+  const getSpriteDrawSize = (name) => {
+    const sprite = sprites[name];
+    if (!sprite) return null;
+    const frame = sprite.frames[0];
+    const targetH = sprite.def.targetH || frame.h;
+    const scale = targetH / frame.h;
+    const targetW = Math.round(frame.w * scale);
+    return { w: targetW, h: targetH, anchorY: sprite.def.anchorY || 0.8 };
+  };
+
+  const applySpriteSize = (entity, name) => {
+    const size = getSpriteDrawSize(name);
+    if (!size) return;
+    entity.w = size.w;
+    entity.h = size.h;
+  };
+
+  const game = {
+    state: 'start',
+    time: 0,
+    score: 0,
+    combo: 0,
+    comboTimer: 0,
+    cameraX: 0,
+    shakeTime: 0,
+    shakeStrength: 0,
+    bossActive: false,
+    endTimer: 0,
+    sectionName: 'Forest',
+    distance: 0,
+    passed: 0,
+    longPoleKills: 0,
+    longPolePrimed: false,
+    gunPrimed: false,
+    nextGunCombo: 10
+  };
+
+  const player = {
+    x: 200,
+    y: 440,
+    w: 40,
+    h: 44,
+    baseSpeed: 145,
+    moveSpeed: 180,
+    vx: 0,
+    vy: 0,
+    facing: 1,
+    health: 3,
+    maxHealth: 3,
+    stamina: 100,
+    maxStamina: 100,
+    invincible: 0,
+    attackCooldown: 0,
+    slashCooldown: 0,
+    boostCooldown: 0,
+    boostTimer: 0,
+    attackBoost: 0,
+    animTime: 0,
+    hitAnim: 0,
+    slashAnim: 0,
+    shootAnim: 0,
+    longPoleActive: false,
+    hasGun: false,
+    gunBullets: 0
+  };
+
+  const SLASH_ANIM_DURATION = 0.45;
+
+  const enemies = [];
+  const projectiles = [];
+  const items = [];
+  const attacks = [];
+  const particles = [];
+  const hazards = [];
+
+  let attackId = 1;
+
+  const sections = [
+    { name: 'Forest', start: 0, end: 2000, spawn: [1.1, 1.6] },
+    { name: 'Tunturi', start: 2000, end: 4200, spawn: [0.9, 1.4] },
+    { name: 'Maintenance', start: 4200, end: 5600, spawn: [0.7, 1.2] }
+  ];
+  const enemyProgression = [
+    { start: 0, types: ['rabbit'] },
+    { start: 300, types: ['rabbit', 'bird'] },
+    { start: 2000, types: ['hiker', 'child'] },
+    { start: 3000, types: ['hiker', 'child', 'fatbiker'] },
+    { start: 3600, types: ['hiker', 'child', 'fatbiker', 'reindeer'] },
+    { start: 4300, types: ['fatbiker', 'reindeer', 'snowmobile'] }
+  ];
+  const bossStart = 5600;
+  const totalLength = 6200;
+
+  let spawnTimer = 0;
+  let nextItemDistance = 500;
+
+  const boss = {
+    active: false,
+    x: 0,
+    y: 360,
+    w: 180,
+    h: 100,
+    health: 90,
+    maxHealth: 90,
+    phase: 1,
+    pattern: 'plow',
+    patternTime: 0,
+    patternTimer: 0,
+    offsetX: 0,
+    cannonTimer: 0,
+    plowTimer: 0,
+    spinTimer: 0,
+    hitCooldown: 0,
+    weakOpen: 0
+  };
+
+  const makeEnemy = (type, x, y) => {
+    const base = {
+      type,
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      w: 34,
+      h: 34,
+      health: 1,
+      speed: 60,
+      hitCooldown: 0,
+      aiTimer: rand(0.2, 1),
+      attackTimer: rand(0.5, 1.5),
+      state: 'idle',
+      animOffset: rand(0, 10)
+    };
+    if (type === 'rabbit') {
+      base.w = 36; base.h = 18; base.speed = 90; base.health = 1;
+    }
+    if (type === 'bird') {
+      base.w = 44; base.h = 22; base.speed = 80; base.health = 1; base.y = rand(TRACK.top - 60, TRACK.top + 40);
+    }
+    if (type === 'hiker') {
+      base.w = 36; base.h = 44; base.speed = 35; base.health = 1;
+    }
+    if (type === 'child') {
+      base.w = 30; base.h = 34; base.speed = 70; base.health = 1;
+    }
+    if (type === 'fatbiker') {
+      base.w = 44; base.h = 40; base.speed = 40; base.health = 1;
+    }
+    if (type === 'reindeer') {
+      base.w = 56; base.h = 42; base.speed = 120; base.health = 1;
+    }
+    if (type === 'snowmobile') {
+      base.w = 72; base.h = 34; base.speed = 110; base.health = 1;
+    }
+    applySpriteSize(base, type);
+    base.sized = false;
+    return base;
+  };
+
+  const spawnEnemy = () => {
+    const section = sections.find(s => game.distance >= s.start && game.distance < s.end) || sections[sections.length - 1];
+    game.sectionName = section.name;
+    const pool = enemyProgression.filter(p => game.distance >= p.start).pop().types;
+    const type = pool[randi(0, pool.length - 1)];
+    const x = game.cameraX + VIEW.w + rand(80, 260);
+    const y = rand(TRACK.top + 30, TRACK.bottom - 20);
+    enemies.push(makeEnemy(type, x, y));
+    spawnTimer = rand(section.spawn[0], section.spawn[1]);
+  };
+
+  const spawnItem = (type, x, y) => {
+    items.push({
+      type,
+      x,
+      y,
+      w: 22,
+      h: 22,
+      bob: rand(0, Math.PI * 2)
+    });
+  };
+
+  const spawnHitParticles = (x, y, color, count = 8) => {
+    for (let i = 0; i < count; i++) {
+      particles.push({
+        x,
+        y,
+        vx: rand(-90, 90),
+        vy: rand(-90, 90),
+        life: rand(0.25, 0.6),
+        size: rand(2, 4),
+        color
+      });
+    }
+  };
+
+  const addShake = (strength, duration) => {
+    game.shakeStrength = Math.max(game.shakeStrength, strength);
+    game.shakeTime = Math.max(game.shakeTime, duration);
+  };
+
+  const rectOverlap = (a, b) => (
+    a.x < b.x + b.w &&
+    a.x + a.w > b.x &&
+    a.y < b.y + b.h &&
+    a.y + a.h > b.y
+  );
+
+  const getSpriteRenderGeom = (name, frameIndex, x, y, flip = false) => {
+    const sprite = sprites[name];
+    if (!sprite || sprite.frames.length === 0) return null;
+    const idx = ((frameIndex % sprite.frames.length) + sprite.frames.length) % sprite.frames.length;
+    const frame = sprite.frames[idx];
+    const targetH = sprite.def.targetH || frame.h;
+    const scale = targetH / frame.h;
+    const dw = frame.w * scale;
+    const dh = frame.h * scale;
+    const anchorY = sprite.def.anchorY || 0.8;
+    return {
+      sprite,
+      frame,
+      mask: sprite.masks ? sprite.masks[idx] : null,
+      scale,
+      left: x - dw / 2,
+      top: y - dh * anchorY,
+      right: x + dw / 2,
+      bottom: y - dh * anchorY + dh,
+      flip
+    };
+  };
+
+  const aabbOverlap = (a, b) => (
+    a.left < b.right &&
+    a.right > b.left &&
+    a.top < b.bottom &&
+    a.bottom > b.top
+  );
+
+  const shrinkGeomBox = (geom, sx = 0.78, sy = 0.78) => {
+    const cx = (geom.left + geom.right) * 0.5;
+    const cy = (geom.top + geom.bottom) * 0.5;
+    const hw = (geom.right - geom.left) * sx * 0.5;
+    const hh = (geom.bottom - geom.top) * sy * 0.5;
+    return {
+      left: cx - hw,
+      right: cx + hw,
+      top: cy - hh,
+      bottom: cy + hh
+    };
+  };
+
+  const pixelPerfectOverlap = (a, b) => {
+    if (!a || !b || !a.mask || !b.mask) return false;
+    if (!aabbOverlap(a, b)) return false;
+
+    const left = Math.max(a.left, b.left);
+    const top = Math.max(a.top, b.top);
+    const right = Math.min(a.right, b.right);
+    const bottom = Math.min(a.bottom, b.bottom);
+    if (right <= left || bottom <= top) return false;
+
+    const x0 = Math.floor(left);
+    const y0 = Math.floor(top);
+    const x1 = Math.ceil(right);
+    const y1 = Math.ceil(bottom);
+
+    for (let py = y0; py < y1; py++) {
+      const ayf = (py + 0.5 - a.top) / a.scale;
+      const byf = (py + 0.5 - b.top) / b.scale;
+      if (ayf < 0 || ayf >= a.frame.h || byf < 0 || byf >= b.frame.h) continue;
+      const ay = ayf | 0;
+      const by = byf | 0;
+      const aRow = ay * a.frame.w;
+      const bRow = by * b.frame.w;
+
+      for (let px = x0; px < x1; px++) {
+        let ax = ((px + 0.5 - a.left) / a.scale) | 0;
+        let bx = ((px + 0.5 - b.left) / b.scale) | 0;
+        if (ax < 0 || ax >= a.frame.w || bx < 0 || bx >= b.frame.w) continue;
+        if (a.flip) ax = a.frame.w - 1 - ax;
+        if (b.flip) bx = b.frame.w - 1 - bx;
+        if (a.mask[aRow + ax] && b.mask[bRow + bx]) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  const getEnemyFrame = (e) => {
+    const sprite = sprites[e.type];
+    if (!sprite || sprite.frames.length <= 1) return 0;
+    const speedMap = { rabbit: 14, bird: 8, child: 9, reindeer: 10 };
+    const speed = speedMap[e.type] || 7;
+    return Math.floor(game.time * speed + e.animOffset) % sprite.frames.length;
+  };
+
+  const getPlayerBaseSheet = () => {
+    if (player.shootAnim > 0 && player.hasGun && sprites.skier_shooting) return 'skier_shooting';
+    if (player.hitAnim > 0 && sprites.skier_hit) {
+      return player.longPoleActive && sprites.long_pole_hit ? 'long_pole_hit' : 'skier_hit';
+    }
+    if (player.hasGun && sprites.skier_with_gun) return 'skier_with_gun';
+    return 'skier';
+  };
+
+  const attackBasic = () => {
+    if (player.attackCooldown > 0) return;
+    player.attackCooldown = 0.25;
+    player.hitAnim = 0.32;
+    const reachMult = player.longPoleActive ? 2 : 1;
+    const w = 36 * reachMult;
+    const h = 26;
+    const x = player.x + (player.facing > 0 ? player.w / 2 : -player.w / 2 - w);
+    const y = player.y - player.h / 2 + 4;
+    attacks.push({
+      id: attackId++,
+      type: 'basic',
+      x,
+      y,
+      w,
+      h,
+      damage: player.attackBoost > 0 ? 2 : 1,
+      time: 0,
+      duration: 0.15
+    });
+    playSfx('strike');
+    spawnHitParticles(x + w / 2, y + h / 2, COLORS.uiBlue, 6);
+  };
+
+  const shootGun = () => {
+    if (!player.hasGun || player.gunBullets <= 0 || player.attackCooldown > 0) return;
+    const dir = player.facing || 1;
+    player.attackCooldown = 0.16;
+    player.shootAnim = 0.22;
+    const muzzleX = player.x + dir * (player.w * 0.6);
+    const muzzleY = player.y - player.h * 0.35;
+    projectiles.push({
+      x: muzzleX,
+      y: muzzleY,
+      vx: 520 * dir,
+      vy: 0,
+      w: 18,
+      h: 8,
+      hitScale: 0.55,
+      damage: 1,
+      life: 1.6,
+      type: 'player_bullet',
+      sprite: 'bullet_proj',
+      owner: 'player'
+    });
+    player.gunBullets = Math.max(0, player.gunBullets - 1);
+    if (player.gunBullets <= 0) {
+      player.hasGun = false;
+      player.shootAnim = 0;
+    }
+    playSfx('strike');
+    spawnHitParticles(muzzleX, muzzleY, '#ffd53d', 4);
+  };
+
+  const attackSlash = () => {
+    if (player.slashCooldown > 0 || player.stamina < 35) return;
+    player.slashCooldown = 1.2;
+    player.stamina = Math.max(0, player.stamina - 35);
+    player.hitAnim = 0.2;
+    player.slashAnim = SLASH_ANIM_DURATION;
+    attacks.push({
+      id: attackId++,
+      type: 'slash',
+      x: player.x,
+      y: player.y,
+      radius: 78,
+      damage: player.attackBoost > 0 ? 3 : 2,
+      time: 0,
+      duration: 0.45
+    });
+    addShake(6, 0.2);
+    playSfx('slash');
+  };
+
+  const activateBoost = () => {
+    if (player.boostCooldown > 0 || player.stamina < player.maxStamina) return;
+    player.boostCooldown = 4;
+    player.boostTimer = 2.4;
+    player.invincible = Math.max(player.invincible, 2.4);
+    player.stamina = 0;
+    addShake(4, 0.15);
+    playSfx('boost');
+  };
+
+  const damagePlayer = (amount) => {
+    if (player.invincible > 0) return;
+    player.health = Math.max(0, player.health - amount);
+    game.combo = 0;
+    game.comboTimer = 0;
+    game.longPoleKills = 0;
+    game.longPolePrimed = false;
+    game.gunPrimed = false;
+    game.nextGunCombo = 10;
+    player.invincible = 1.1;
+    addShake(8, 0.3);
+    playSfx('hurt');
+    spawnHitParticles(player.x, player.y, COLORS.uiRed, 10);
+    if (player.health <= 0) {
+      game.state = 'gameover';
+      game.endTimer = 1.2;
+      stopAllMusic();
+    }
+  };
+
+  const hitEnemy = (enemy, damage) => {
+    if (enemy.hitCooldown > 0) return;
+    enemy.health -= damage;
+    enemy.hitCooldown = 0.12;
+    spawnHitParticles(enemy.x, enemy.y, COLORS.enemyYellow, 8);
+    playSfx('hit');
+    game.combo = Math.min(40, game.combo + 1);
+    game.comboTimer = 2.2;
+    const multiplier = 1 + Math.floor(game.combo / 5) * 0.1;
+    game.score += Math.floor(50 * multiplier);
+    if (game.combo >= game.nextGunCombo) {
+      game.gunPrimed = true;
+      game.nextGunCombo += 10;
+    }
+
+    if (enemy.health <= 0) {
+      game.score += 100;
+      addShake(4, 0.2);
+      spawnHitParticles(enemy.x, enemy.y, COLORS.enemyOrange, 14);
+      if (!player.longPoleActive) {
+        game.longPoleKills += 1;
+        if (game.longPoleKills >= 5) {
+          game.longPolePrimed = true;
+          game.longPoleKills = 0;
+        }
+        if (game.longPolePrimed) {
+          spawnItem('longpole', enemy.x, enemy.y - 12);
+          game.longPolePrimed = false;
+        }
+      }
+      if (game.gunPrimed) {
+        spawnItem('gun', enemy.x + 8, enemy.y - 10);
+        game.gunPrimed = false;
+      }
+      if (Math.random() < 0.12) {
+        spawnItem('energy', enemy.x, enemy.y - 10);
+      }
+      if (Math.random() < 0.06) {
+        spawnItem('thermos', enemy.x, enemy.y - 10);
+      }
+      if (Math.random() < 0.08) {
+        spawnItem('gloves', enemy.x, enemy.y - 10);
+      }
+    }
+  };
+
+  const startBossFight = () => {
+    if (game.bossActive) return;
+    game.bossActive = true;
+    boss.active = true;
+    boss.health = boss.maxHealth;
+    boss.phase = 1;
+    boss.pattern = 'plow';
+    boss.patternTimer = 0.5;
+    boss.offsetX = 0;
+    boss.y = (TRACK.top + TRACK.bottom) * 0.5;
+    applySpriteSize(boss, 'snowgroomer');
+    enemies.length = 0;
+    projectiles.length = 0;
+    hazards.length = 0;
+    playMusic(audio.boss);
+  };
+
+  const updateBoss = (dt) => {
+    if (!boss.active) return;
+
+    if (!boss.sized && sprites.snowgroomer) {
+      applySpriteSize(boss, 'snowgroomer');
+      boss.sized = true;
+    }
+
+    boss.hitCooldown = Math.max(0, boss.hitCooldown - dt);
+    boss.weakOpen = Math.max(0, boss.weakOpen - dt);
+
+    const desiredBase = game.cameraX + VIEW.w - 250;
+    boss.x = desiredBase + boss.offsetX;
+    boss.y = clamp(boss.y + (player.y - boss.y) * 0.01, TRACK.top + 20, TRACK.bottom - boss.h / 2);
+
+    boss.phase = boss.health > boss.maxHealth * 0.66 ? 1 : boss.health > boss.maxHealth * 0.33 ? 2 : 3;
+
+    boss.patternTimer -= dt;
+    if (boss.patternTimer <= 0) {
+      const patterns = ['plow', 'spin', 'cannon'];
+      boss.pattern = patterns[randi(0, patterns.length - 1)];
+      boss.patternTime = 0;
+      boss.plowTimer = 0;
+      boss.spinTimer = 0;
+      boss.cannonTimer = 0;
+      boss.patternTimer = boss.pattern === 'cannon' ? 2.2 : 1.6;
+      if (boss.phase === 3) boss.patternTimer *= 0.85;
+    }
+
+    if (boss.pattern === 'plow') {
+      boss.plowTimer += dt;
+      const phaseTime = boss.phase === 3 ? 0.6 : 0.75;
+      if (boss.plowTimer < phaseTime) {
+        boss.offsetX = lerp(0, -220, boss.plowTimer / phaseTime);
+      } else if (boss.plowTimer < phaseTime * 2) {
+        boss.offsetX = lerp(-220, 0, (boss.plowTimer - phaseTime) / phaseTime);
+      } else {
+        boss.offsetX = 0;
+      }
+      const plowHit = { x: boss.x - 30, y: boss.y - boss.h / 2 + 10, w: 60, h: boss.h - 20 };
+      const playerBox = { x: player.x - player.w / 2, y: player.y - player.h / 2, w: player.w, h: player.h };
+      if (rectOverlap(plowHit, playerBox)) {
+        damagePlayer(1);
+      }
+    }
+
+    if (boss.pattern === 'spin') {
+      boss.spinTimer += dt;
+      if (Math.floor(boss.spinTimer * 12) % 2 === 0) {
+        spawnHitParticles(boss.x - 30, boss.y, COLORS.enemyGray, 2);
+      }
+      const spinRadius = boss.phase === 3 ? 110 : 95;
+      const dx = player.x - boss.x;
+      const dy = player.y - boss.y;
+      if (Math.hypot(dx, dy) < spinRadius) {
+        damagePlayer(1);
+      }
+      boss.weakOpen = 0.2;
+    }
+
+    if (boss.pattern === 'cannon') {
+      boss.cannonTimer += dt;
+      if (boss.cannonTimer > 0.35) {
+        boss.cannonTimer = 0;
+        const spread = rand(-40, 40);
+        projectiles.push({
+          x: boss.x - 50,
+          y: boss.y - 10,
+          vx: -180 + spread,
+          vy: rand(-30, 50),
+          w: 20,
+          h: 14,
+          hitScale: 0.7,
+          damage: 1,
+          life: 2.8,
+          type: 'cannon',
+          sprite: 'cannon_round'
+        });
+        hazards.push({
+          x: boss.x - 80,
+          y: boss.y + rand(-20, 50),
+          w: 30,
+          h: 18,
+          life: 4.5,
+          type: 'ice'
+        });
+      }
+    }
+
+    if (boss.health <= 0) {
+      boss.active = false;
+      game.bossActive = false;
+      game.score += 2500;
+      game.state = 'victory';
+      playMusic(audio.win);
+    }
+  };
+
+  const updatePlayer = (dt) => {
+    if (!player.sized && sprites.skier) {
+      applySpriteSize(player, 'skier');
+      player.sized = true;
+    }
+    const ix = (keys['arrowright'] ? 1 : 0) - (keys['arrowleft'] ? 1 : 0);
+    const iy = (keys['arrowdown'] ? 1 : 0) - (keys['arrowup'] ? 1 : 0);
+    const mag = Math.hypot(ix, iy) || 1;
+
+    const boostSpeed = player.boostTimer > 0 ? 140 : 0;
+    const pressure = Math.min(2, game.passed || 0);
+    const pressureSlow = pressure * 10;
+    const autoForward = Math.max(0, player.baseSpeed - pressureSlow + boostSpeed);
+    player.vx = autoForward + (ix / mag) * player.moveSpeed;
+    player.vy = (iy / mag) * player.moveSpeed;
+
+    if (ix !== 0) player.facing = Math.sign(ix);
+
+    game.cameraX += autoForward * dt;
+    player.x += player.vx * dt;
+    player.y += player.vy * dt;
+    player.y = clamp(player.y, TRACK.top + player.h / 2, TRACK.bottom - player.h / 2);
+
+    const minX = game.cameraX + 80;
+    const maxX = game.cameraX + VIEW.w - 120;
+    player.x = clamp(player.x, minX, maxX);
+
+    game.distance = game.cameraX;
+
+    if (player.boostTimer > 0) {
+      player.stamina = 0;
+    } else {
+      player.stamina = clamp(player.stamina + 11 * dt, 0, player.maxStamina);
+    }
+    player.invincible = Math.max(0, player.invincible - dt);
+    player.attackCooldown = Math.max(0, player.attackCooldown - dt);
+    player.slashCooldown = Math.max(0, player.slashCooldown - dt);
+    player.boostCooldown = Math.max(0, player.boostCooldown - dt);
+    player.boostTimer = Math.max(0, player.boostTimer - dt);
+    player.attackBoost = Math.max(0, player.attackBoost - dt);
+    player.hitAnim = Math.max(0, player.hitAnim - dt);
+    player.slashAnim = Math.max(0, player.slashAnim - dt);
+    player.shootAnim = Math.max(0, player.shootAnim - dt);
+
+    if (player.boostTimer > 0) {
+      particles.push({
+        x: player.x - 20,
+        y: player.y + rand(-10, 10),
+        vx: rand(-120, -60),
+        vy: rand(-20, 20),
+        life: rand(0.2, 0.4),
+        size: rand(2, 4),
+        color: COLORS.uiBlue
+      });
+    }
+
+    if (consumePressed('z')) {
+      if (player.hasGun && player.gunBullets > 0) shootGun();
+      else attackBasic();
+    }
+    if (consumePressed('x')) attackSlash();
+    if (consumePressed('c')) activateBoost();
+  };
+
+  const updateEnemies = (dt) => {
+    const playerCollisionSheet = sprites.skier ? 'skier' : getPlayerBaseSheet();
+    const playerSheetFrames = sprites[playerCollisionSheet] ? sprites[playerCollisionSheet].frames.length : 1;
+    const playerCollisionFrame = Math.floor(game.time * 10) % playerSheetFrames;
+    const playerGeom = getSpriteRenderGeom(
+      playerCollisionSheet,
+      playerCollisionFrame,
+      player.x,
+      player.y,
+      player.facing < 0
+    );
+
+    for (let i = enemies.length - 1; i >= 0; i--) {
+      const e = enemies[i];
+      if (!e.sized && sprites[e.type]) {
+        applySpriteSize(e, e.type);
+        e.sized = true;
+      }
+      e.hitCooldown = Math.max(0, e.hitCooldown - dt);
+      e.aiTimer -= dt;
+      e.attackTimer -= dt;
+
+      if (e.type === 'rabbit') {
+        if (e.aiTimer <= 0) {
+          e.aiTimer = rand(0.4, 1);
+          e.vx = -rand(60, 120);
+          e.vy = rand(-50, 50);
+        }
+        if (Math.abs(player.x - e.x) < 90) {
+          e.vx = -160;
+        }
+      }
+
+      if (e.type === 'bird') {
+        if (e.aiTimer <= 0) {
+          e.aiTimer = rand(0.8, 1.2);
+          e.state = e.state === 'dive' ? 'rise' : 'dive';
+        }
+        if (e.state === 'dive') {
+          e.vy = 180;
+        } else {
+          e.vy = -120;
+        }
+        e.vx = -60;
+      }
+
+      if (e.type === 'hiker') {
+        e.vx = -35;
+        if (e.attackTimer <= 0 && Math.abs(player.x - e.x) < 260) {
+          e.attackTimer = rand(2.2, 3.2);
+          projectiles.push({
+            x: e.x - 10,
+            y: e.y - 10,
+            vx: -160,
+            vy: rand(-20, 20),
+            w: 16,
+            h: 16,
+            hitScale: 0.56,
+            damage: 1,
+            life: 2,
+            type: 'snowball',
+            sprite: 'snowball_proj'
+          });
+        }
+      }
+
+      if (e.type === 'child') {
+        if (e.aiTimer <= 0) {
+          e.aiTimer = rand(0.4, 0.9);
+          e.vx = rand(-120, 40);
+          e.vy = rand(-120, 120);
+        }
+      }
+
+      if (e.type === 'fatbiker') {
+        if (e.state !== 'charge') {
+          e.vx = -40;
+        }
+        if (Math.abs(player.x - e.x) < 140 && e.state !== 'charge') {
+          e.state = 'charge';
+          e.chargeTimer = 0.4;
+          e.vx = -200;
+          addShake(2, 0.1);
+        }
+        if (e.state === 'charge') {
+          e.chargeTimer -= dt;
+          if (e.chargeTimer <= 0) {
+            e.state = 'idle';
+          }
+        }
+      }
+
+      if (e.type === 'reindeer') {
+        if (e.state !== 'charge') {
+          e.vx = -80;
+        }
+        if (Math.abs(player.x - e.x) < 220 && e.state !== 'charge') {
+          e.state = 'charge';
+          e.chargeTimer = 0.5;
+          e.vx = -260;
+        }
+        if (e.state === 'charge') {
+          e.chargeTimer -= dt;
+          if (e.chargeTimer <= 0) {
+            e.state = 'idle';
+            e.vx = -80;
+          }
+        }
+      }
+
+      if (e.type === 'snowmobile') {
+        e.vx = -110;
+        if (e.attackTimer <= 0 && Math.abs(player.x - e.x) < 320) {
+          e.attackTimer = rand(1.6, 2.4);
+          projectiles.push({
+            x: e.x - 12,
+            y: e.y - 6,
+            vx: -240,
+            vy: 0,
+            w: 18,
+            h: 12,
+            hitScale: 0.66,
+            damage: 1,
+            life: 2.3,
+            type: 'icebolt'
+          });
+        }
+      }
+
+      e.x += e.vx * dt;
+      e.y += e.vy * dt;
+      const topBound = e.type === 'bird' ? Math.max(30, TRACK.top - 90) : TRACK.top + e.h / 2;
+      e.y = clamp(e.y, topBound, TRACK.bottom - e.h / 2);
+
+      const enemyFrame = getEnemyFrame(e);
+      const enemyGeom = getSpriteRenderGeom(e.type, enemyFrame, e.x, e.y, e.vx < 0);
+      if (playerGeom && enemyGeom) {
+        const canPixel = !!(playerGeom.mask && enemyGeom.mask);
+        let collided = false;
+        if (canPixel) {
+          collided = pixelPerfectOverlap(playerGeom, enemyGeom);
+        } else {
+          const pBox = shrinkGeomBox(playerGeom, 0.66, 0.66);
+          const eBox = shrinkGeomBox(enemyGeom, 0.66, 0.66);
+          collided = aabbOverlap(pBox, eBox);
+        }
+        if (collided) {
+          if (player.boostTimer > 0) {
+            e.hitCooldown = 0;
+            hitEnemy(e, Math.max(1, e.health));
+          } else {
+            damagePlayer(1);
+          }
+        }
+      } else {
+        const playerBox = {
+          x: player.x - player.w * 0.33,
+          y: player.y - player.h * 0.33,
+          w: player.w * 0.66,
+          h: player.h * 0.66
+        };
+        const enemyBox = {
+          x: e.x - e.w * 0.33,
+          y: e.y - e.h * 0.33,
+          w: e.w * 0.66,
+          h: e.h * 0.66
+        };
+        if (rectOverlap(playerBox, enemyBox)) {
+          if (player.boostTimer > 0) {
+            e.hitCooldown = 0;
+            hitEnemy(e, Math.max(1, e.health));
+          } else {
+            damagePlayer(1);
+          }
+        }
+      }
+
+      if (e.health <= 0) {
+        game.passed = Math.max(0, game.passed - 1);
+        enemies.splice(i, 1);
+        continue;
+      }
+      if (e.x < game.cameraX - 260) {
+        if (e.health > 0) {
+          game.passed = Math.min(6, (game.passed || 0) + 1);
+        }
+        enemies.splice(i, 1);
+      }
+    }
+  };
+
+  const updateAttacks = (dt) => {
+    const destroyEnemyProjectilesByHitBox = (hitBox) => {
+      for (let p = projectiles.length - 1; p >= 0; p--) {
+        const pr = projectiles[p];
+        if (pr.owner === 'player' || (pr.type !== 'snowball' && pr.type !== 'cannon')) continue;
+        const scale = pr.hitScale || 1;
+        const pw = pr.w * scale;
+        const ph = pr.h * scale;
+        const projBox = { x: pr.x - pw / 2, y: pr.y - ph / 2, w: pw, h: ph };
+        if (rectOverlap(hitBox, projBox)) {
+          const fx = pr.type === 'cannon' ? '#ffb23d' : '#d2ebf5';
+          spawnHitParticles(pr.x, pr.y, fx, 6);
+          playSfx('hit');
+          projectiles.splice(p, 1);
+        }
+      }
+    };
+
+    const destroyEnemyProjectilesByRadius = (cx, cy, radius) => {
+      for (let p = projectiles.length - 1; p >= 0; p--) {
+        const pr = projectiles[p];
+        if (pr.owner === 'player' || (pr.type !== 'snowball' && pr.type !== 'cannon')) continue;
+        const scale = pr.hitScale || 1;
+        const pw = pr.w * scale;
+        const ph = pr.h * scale;
+        const contactPad = Math.max(pw, ph) * 0.45;
+        if (Math.hypot(pr.x - cx, pr.y - cy) <= radius + contactPad) {
+          const fx = pr.type === 'cannon' ? '#ffb23d' : '#d2ebf5';
+          spawnHitParticles(pr.x, pr.y, fx, 7);
+          playSfx('hit');
+          projectiles.splice(p, 1);
+        }
+      }
+    };
+
+    for (let i = attacks.length - 1; i >= 0; i--) {
+      const a = attacks[i];
+      a.time += dt;
+      if (a.time > a.duration) {
+        attacks.splice(i, 1);
+        continue;
+      }
+      if (a.type === 'basic') {
+        const hitBox = { x: a.x, y: a.y, w: a.w, h: a.h };
+        enemies.forEach((e) => {
+          const enemyBox = { x: e.x - e.w / 2, y: e.y - e.h / 2, w: e.w, h: e.h };
+          if (rectOverlap(hitBox, enemyBox)) {
+            hitEnemy(e, a.damage);
+          }
+        });
+        destroyEnemyProjectilesByHitBox(hitBox);
+        if (boss.active) {
+          const bossBox = { x: boss.x - boss.w / 2, y: boss.y - boss.h / 2, w: boss.w, h: boss.h };
+          if (rectOverlap(hitBox, bossBox)) {
+            if (boss.hitCooldown <= 0) {
+              const weakBox = { x: boss.x + boss.w / 2 - 55, y: boss.y - 20, w: 40, h: 40 };
+              const weakHit = rectOverlap(hitBox, weakBox);
+              const applied = weakHit || boss.weakOpen > 0 ? a.damage + 1 : a.damage;
+              boss.health -= applied;
+              boss.hitCooldown = 0.2;
+              spawnHitParticles(boss.x - 30, boss.y, COLORS.enemyYellow, 10);
+              addShake(3, 0.1);
+            }
+          }
+        }
+      }
+      if (a.type === 'slash') {
+        enemies.forEach((e) => {
+          const dx = e.x - a.x;
+          const dy = e.y - a.y;
+          if (Math.hypot(dx, dy) < a.radius) {
+            hitEnemy(e, a.damage);
+          }
+        });
+        destroyEnemyProjectilesByRadius(a.x, a.y, a.radius);
+        if (boss.active) {
+          const dx = boss.x - a.x;
+          const dy = boss.y - a.y;
+          if (Math.hypot(dx, dy) < a.radius + 30) {
+            if (boss.hitCooldown <= 0) {
+              const applied = boss.weakOpen > 0 ? a.damage + 1 : a.damage;
+              boss.health -= applied;
+              boss.hitCooldown = 0.2;
+              spawnHitParticles(boss.x - 20, boss.y, COLORS.enemyYellow, 12);
+              addShake(4, 0.12);
+            }
+          }
+        }
+      }
+    }
+  };
+
+  const updateProjectiles = (dt) => {
+    for (let i = 0; i < projectiles.length; i++) {
+      const p = projectiles[i];
+      if (!p || p.dead) continue;
+      if (p.sprite && !p.sized && sprites[p.sprite]) {
+        const size = getSpriteDrawSize(p.sprite);
+        if (size) {
+          p.w = size.w;
+          p.h = size.h;
+        }
+        p.sized = true;
+      }
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.life -= dt;
+    }
+
+    for (let i = 0; i < projectiles.length; i++) {
+      const p = projectiles[i];
+      if (!p || p.dead) continue;
+
+      const hitScale = p.hitScale || 1;
+      const hitW = (p.w || 0) * hitScale;
+      const hitH = (p.h || 0) * hitScale;
+      const projBox = { x: p.x - hitW / 2, y: p.y - hitH / 2, w: hitW, h: hitH };
+
+      if (p.owner === 'player') {
+        for (let j = 0; j < projectiles.length; j++) {
+          if (j === i) continue;
+          const ep = projectiles[j];
+          if (!ep || ep.dead) continue;
+          if (ep.owner === 'player' || (ep.type !== 'snowball' && ep.type !== 'cannon')) continue;
+
+          const eScale = ep.hitScale || 1;
+          const ew = (ep.w || 0) * eScale;
+          const eh = (ep.h || 0) * eScale;
+          const enemyProjBox = { x: ep.x - ew / 2, y: ep.y - eh / 2, w: ew, h: eh };
+
+          if (rectOverlap(projBox, enemyProjBox)) {
+            const fx = ep.type === 'cannon' ? '#ffb23d' : '#d2ebf5';
+            spawnHitParticles(ep.x, ep.y, fx, 6);
+            playSfx('hit');
+            ep.dead = true;
+            p.dead = true;
+            break;
+          }
+        }
+        if (p.dead) continue;
+
+        for (let j = enemies.length - 1; j >= 0; j--) {
+          const e = enemies[j];
+          const enemyBox = { x: e.x - e.w / 2, y: e.y - e.h / 2, w: e.w, h: e.h };
+          if (rectOverlap(projBox, enemyBox)) {
+            hitEnemy(e, p.damage || 1);
+            p.dead = true;
+            break;
+          }
+        }
+        if (p.dead) continue;
+
+        if (boss.active) {
+          const bossBox = { x: boss.x - boss.w / 2, y: boss.y - boss.h / 2, w: boss.w, h: boss.h };
+          if (rectOverlap(projBox, bossBox) && boss.hitCooldown <= 0) {
+            const weakBox = { x: boss.x + boss.w / 2 - 55, y: boss.y - 20, w: 40, h: 40 };
+            const weakHit = rectOverlap(projBox, weakBox);
+            const baseDamage = p.damage || 1;
+            const applied = weakHit || boss.weakOpen > 0 ? baseDamage + 1 : baseDamage;
+            boss.health -= applied;
+            boss.hitCooldown = 0.16;
+            spawnHitParticles(p.x, p.y, COLORS.enemyYellow, 8);
+            addShake(2, 0.08);
+            p.dead = true;
+          }
+        }
+      } else {
+        const playerBox = { x: player.x - player.w / 2, y: player.y - player.h / 2, w: player.w, h: player.h };
+        if (rectOverlap(playerBox, projBox)) {
+          damagePlayer(p.damage);
+          p.dead = true;
+        }
+      }
+
+      if (!p.dead && (p.life <= 0 || p.x < game.cameraX - 200 || p.x > game.cameraX + VIEW.w + 200)) {
+        p.dead = true;
+      }
+    }
+
+    for (let i = projectiles.length - 1; i >= 0; i--) {
+      if (!projectiles[i] || projectiles[i].dead) {
+        projectiles.splice(i, 1);
+      }
+    }
+  };
+
+  const updateItems = (dt) => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      it.bob += dt * 3;
+      const itemBox = { x: it.x - it.w / 2, y: it.y - it.h / 2, w: it.w, h: it.h };
+      const playerBox = { x: player.x - player.w / 2, y: player.y - player.h / 2, w: player.w, h: player.h };
+      if (rectOverlap(itemBox, playerBox)) {
+        if (it.type === 'thermos') {
+          player.health = Math.min(player.maxHealth, player.health + 1);
+        }
+        if (it.type === 'energy') {
+          player.stamina = Math.min(player.maxStamina, player.stamina + 50);
+        }
+        if (it.type === 'gloves') {
+          player.attackBoost = 6;
+        }
+        if (it.type === 'longpole') {
+          player.longPoleActive = true;
+          game.longPoleKills = 0;
+          game.longPolePrimed = false;
+        }
+        if (it.type === 'gun') {
+          player.hasGun = true;
+          player.gunBullets += 20;
+        }
+        playSfx('power');
+        spawnHitParticles(it.x, it.y, COLORS.uiYellow, 10);
+        items.splice(i, 1);
+      }
+    }
+  };
+
+  const updateHazards = (dt) => {
+    for (let i = hazards.length - 1; i >= 0; i--) {
+      const h = hazards[i];
+      h.life -= dt;
+      const hazardBox = { x: h.x - h.w / 2, y: h.y - h.h / 2, w: h.w, h: h.h };
+      const playerBox = { x: player.x - player.w / 2, y: player.y - player.h / 2, w: player.w, h: player.h };
+      if (rectOverlap(hazardBox, playerBox)) {
+        damagePlayer(1);
+      }
+      if (h.life <= 0) {
+        hazards.splice(i, 1);
+      }
+    }
+  };
+
+  const updateParticles = (dt) => {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life -= dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      if (p.life <= 0) {
+        particles.splice(i, 1);
+      }
+    }
+  };
+
+  const updateSpawns = (dt) => {
+    if (game.bossActive) return;
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) {
+      spawnEnemy();
+    }
+    if (game.distance > nextItemDistance) {
+      spawnItem(Math.random() < 0.5 ? 'energy' : 'thermos', game.cameraX + VIEW.w + rand(40, 120), rand(TRACK.top + 40, TRACK.bottom - 40));
+      nextItemDistance += rand(500, 800);
+    }
+    if (game.distance >= bossStart && !game.bossActive) {
+      startBossFight();
+    }
+  };
+
+  const updateSectionName = () => {
+    const section = sections.find(s => game.distance >= s.start && game.distance < s.end) || sections[sections.length - 1];
+    game.sectionName = section.name;
+  };
+
+  const update = (dt) => {
+    if (game.state !== 'playing') return;
+    game.time += dt;
+    game.comboTimer -= dt;
+    if (game.comboTimer <= 0) {
+      game.combo = 0;
+      game.gunPrimed = false;
+      game.nextGunCombo = 10;
+    }
+
+    updatePlayer(dt);
+    game.score += Math.floor(player.vx * dt * 0.15);
+    updateSectionName();
+    updateSpawns(dt);
+    updateEnemies(dt);
+    updateAttacks(dt);
+    updateProjectiles(dt);
+    updateItems(dt);
+    updateParticles(dt);
+    updateHazards(dt);
+    updateBoss(dt);
+
+    if (game.distance > totalLength && !boss.active) {
+      game.state = 'victory';
+      playMusic(audio.win);
+    }
+  };
+
+  const drawBackgroundImage = (img, speed, alpha = 1) => {
+    if (!img) return;
+    const scale = VIEW.h / img.height;
+    const drawW = Math.round(img.width * scale);
+    const offset = ((game.cameraX * speed) % drawW + drawW) % drawW;
+    ctx.globalAlpha = alpha;
+    for (let x = -offset; x < VIEW.w + drawW; x += drawW) {
+      ctx.drawImage(img, Math.round(x), 0, drawW, VIEW.h);
+    }
+    ctx.globalAlpha = 1;
+  };
+
+  const drawBackground = () => {
+    updateTrackBounds();
+    if (backgroundsReady) {
+      const primary = backgrounds.main;
+      drawBackgroundImage(primary, 1, 1);
+    } else {
+      ctx.fillStyle = COLORS.skyMid;
+      ctx.fillRect(0, 0, VIEW.w, VIEW.h);
+    }
+  };
+
+  const drawSprite = (name, frameIndex, x, y, flip = false, opts = null) => {
+    const sprite = sprites[name];
+    if (!sprite) return false;
+    const frame = sprite.frames[frameIndex % sprite.frames.length];
+    const targetH = sprite.def.targetH || frame.h;
+    const scale = targetH / frame.h;
+    const dw = frame.w * scale;
+    const dh = frame.h * scale;
+    const anchorY = sprite.def.anchorY || 0.8;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(flip ? -1 : 1, 1);
+    if (opts && opts.filter) ctx.filter = opts.filter;
+    if (opts && typeof opts.alpha === 'number') ctx.globalAlpha = opts.alpha;
+    ctx.drawImage(sprite.img, frame.x, frame.y, frame.w, frame.h, -dw / 2, -dh * anchorY, dw, dh);
+    ctx.restore();
+    return true;
+  };
+
+  const drawSkier = (x, y) => {
+    const useShoot = player.shootAnim > 0 && player.hasGun && sprites.skier_shooting;
+    const useSlash = player.slashAnim > 0 && sprites.slalom_slash;
+    const baseSheet = getPlayerBaseSheet();
+    const sheet = useSlash && !useShoot ? 'slalom_slash' : baseSheet;
+    const frameCount = sprites[sheet] ? sprites[sheet].frames.length : 4;
+    let frame = Math.floor(game.time * 10) % frameCount;
+    if (useSlash && !useShoot) {
+      const t = clamp(1 - player.slashAnim / SLASH_ANIM_DURATION, 0, 0.999);
+      frame = Math.floor(t * frameCount);
+    }
+    const boostActive = player.boostTimer > 0;
+    if (boostActive) {
+      const pulse = 0.45 + 0.25 * (0.5 + 0.5 * Math.sin(game.time * 18));
+      const auraR = 24 + 6 * (0.5 + 0.5 * Math.sin(game.time * 14));
+      const glow = ctx.createRadialGradient(x, y - 8, 6, x, y - 8, auraR);
+      glow.addColorStop(0, `rgba(255,145,40,${pulse})`);
+      glow.addColorStop(0.5, `rgba(255,170,60,${pulse * 0.45})`);
+      glow.addColorStop(1, 'rgba(255,170,60,0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(x, y - 8, auraR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const filter = boostActive ? 'sepia(0.45) saturate(1.7) hue-rotate(-20deg) brightness(1.06)' : null;
+    if (drawSprite(sheet, frame, x, y, player.facing < 0, { filter })) return;
+    const pulse = Math.floor(game.time * 10) % 2;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.fillStyle = COLORS.playerBlue;
+    ctx.fillRect(-8, -16, 16, 20);
+    ctx.fillStyle = COLORS.playerRed;
+    ctx.fillRect(-6, -24, 12, 10);
+    ctx.fillStyle = '#ffe2c2';
+    ctx.fillRect(-4, -30, 8, 8);
+    ctx.fillStyle = COLORS.playerDark;
+    ctx.fillRect(-14, 8 + pulse * 2, 28, 4);
+    ctx.fillRect(-14, 12 + pulse * 2, 28, 4);
+    ctx.strokeStyle = '#3b2f2f';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-12, -8);
+    ctx.lineTo(-22, 8 + pulse * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(12, -8);
+    ctx.lineTo(22, 8 + pulse * 2);
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawEnemy = (e) => {
+    const sx = e.x - game.cameraX;
+    const sy = e.y;
+    const frame = getEnemyFrame(e);
+    if (drawSprite(e.type, frame, sx, sy, e.vx < 0)) return;
+    ctx.save();
+    ctx.translate(sx, sy);
+    let body = COLORS.enemyGreen;
+    if (e.type === 'rabbit') body = COLORS.enemyPink;
+    if (e.type === 'bird') body = COLORS.enemyPurple;
+    if (e.type === 'hiker') body = COLORS.enemyGray;
+    if (e.type === 'child') body = COLORS.enemyYellow;
+    if (e.type === 'fatbiker') body = COLORS.enemyOrange;
+    if (e.type === 'reindeer') body = '#b97a56';
+    if (e.type === 'snowmobile') body = '#3b445a';
+
+    ctx.fillStyle = body;
+    ctx.fillRect(-e.w / 2, -e.h / 2, e.w, e.h);
+
+    ctx.fillStyle = '#1d1d1d';
+    if (e.type === 'rabbit') {
+      ctx.fillRect(-6, -e.h / 2 - 6, 4, 10);
+      ctx.fillRect(2, -e.h / 2 - 6, 4, 10);
+    }
+    if (e.type === 'bird') {
+      ctx.fillRect(-e.w / 2 - 8, -2, 8, 4);
+      ctx.fillRect(e.w / 2, -2, 8, 4);
+    }
+    if (e.type === 'snowmobile') {
+      ctx.fillStyle = '#9ad1ff';
+      ctx.fillRect(-e.w / 2 - 6, -4, 6, 6);
+    }
+    ctx.restore();
+  };
+
+  const drawBoss = () => {
+    if (!boss.active) return;
+    const sx = boss.x - game.cameraX;
+    const sy = boss.y;
+    if (drawSprite('snowgroomer', 0, sx, sy, false)) return;
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.fillStyle = COLORS.bossSteel;
+    ctx.fillRect(-boss.w / 2, -boss.h / 2, boss.w, boss.h);
+    ctx.fillStyle = '#42506a';
+    ctx.fillRect(-boss.w / 2 + 10, -boss.h / 2 + 10, boss.w - 20, boss.h - 20);
+    ctx.fillStyle = '#cfd8e3';
+    ctx.fillRect(-boss.w / 2 - 10, -boss.h / 2 + 16, 20, boss.h - 32);
+    ctx.fillStyle = '#0d1b2f';
+    ctx.fillRect(20, -boss.h / 2 + 10, 18, 18);
+    ctx.restore();
+  };
+
+  const drawAttacks = () => {
+    attacks.forEach((a) => {
+      if (a.type === 'basic') {
+        ctx.fillStyle = 'rgba(31,183,255,0.6)';
+        const sx = a.x - game.cameraX;
+        ctx.fillRect(sx, a.y, a.w, a.h);
+      }
+      if (a.type === 'slash') {
+        const sx = a.x - game.cameraX;
+        const t = clamp(a.time / a.duration, 0, 1);
+
+        ctx.fillStyle = `rgba(90, 210, 255, ${0.1 * (1 - t)})`;
+        ctx.beginPath();
+        ctx.arc(sx, a.y, a.radius * (0.45 + 0.55 * t), 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = `rgba(255,213,61,${0.75 - t * 0.25})`;
+        ctx.lineWidth = 4;
+        ctx.setLineDash([12, 8]);
+        ctx.lineDashOffset = -a.time * 160;
+        ctx.beginPath();
+        ctx.arc(sx, a.y, a.radius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.strokeStyle = `rgba(140,235,255,${0.55 - t * 0.2})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(sx, a.y, a.radius * 0.78, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    });
+  };
+
+  const drawProjectiles = () => {
+    projectiles.forEach((p) => {
+      const sx = p.x - game.cameraX;
+      if (p.sprite && sprites[p.sprite]) {
+        drawSprite(p.sprite, 0, sx, p.y, p.vx < 0);
+        return;
+      }
+      let fill = '#e6f7ff';
+      let stroke = '#2d73ff';
+      if (p.type === 'icebolt') { fill = '#7dd7ff'; stroke = '#1665ff'; }
+      if (p.type === 'cannon') { fill = '#ffb23d'; stroke = '#cc4a0f'; }
+      if (p.type === 'snowball') { fill = '#ffffff'; stroke = '#66b6ff'; }
+      ctx.fillStyle = fill;
+      ctx.fillRect(sx - p.w / 2, p.y - p.h / 2, p.w, p.h);
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(sx - p.w / 2, p.y - p.h / 2, p.w, p.h);
+    });
+  };
+
+  const drawItems = () => {
+    items.forEach((it) => {
+      const sx = it.x - game.cameraX;
+      const bob = Math.sin(it.bob) * 4;
+      const frameMap = { thermos: 0, energy: 1, gloves: 2 };
+      if (it.type === 'longpole') {
+        if (drawSprite('long_pole_powerup', 0, sx, it.y + bob, false)) return;
+      } else if (it.type === 'gun') {
+        if (drawSprite('gun_powerup', 0, sx, it.y + bob, false)) return;
+      } else if (drawSprite('collectibles', frameMap[it.type] || 0, sx, it.y + bob, false)) {
+        return;
+      }
+      if (it.type === 'thermos') {
+        ctx.fillStyle = '#ff7b00';
+        ctx.fillRect(sx - 6, it.y - 8 + bob, 12, 16);
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(sx - 4, it.y - 6 + bob, 8, 8);
+      }
+      if (it.type === 'energy') {
+        ctx.fillStyle = '#3ba7ff';
+        ctx.fillRect(sx - 6, it.y - 8 + bob, 12, 16);
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(sx - 3, it.y - 3 + bob, 6, 6);
+      }
+      if (it.type === 'gloves') {
+        ctx.fillStyle = '#ffd53d';
+        ctx.fillRect(sx - 7, it.y - 6 + bob, 14, 12);
+        ctx.fillStyle = '#b8860b';
+        ctx.fillRect(sx - 5, it.y - 2 + bob, 4, 5);
+        ctx.fillRect(sx + 1, it.y - 2 + bob, 4, 5);
+      }
+      if (it.type === 'longpole') {
+        ctx.strokeStyle = '#f6c84b';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(sx - 14, it.y + 8 + bob);
+        ctx.lineTo(sx + 14, it.y - 8 + bob);
+        ctx.stroke();
+      }
+      if (it.type === 'gun') {
+        ctx.fillStyle = '#4ab8ff';
+        ctx.fillRect(sx - 12, it.y - 5 + bob, 24, 10);
+        ctx.fillStyle = '#f2c94c';
+        ctx.fillRect(sx + 6, it.y - 3 + bob, 8, 6);
+      }
+    });
+  };
+
+  const drawParticles = () => {
+    particles.forEach((p) => {
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = clamp(p.life / 0.6, 0, 1);
+      const sx = p.x - game.cameraX;
+      ctx.fillRect(sx, p.y, p.size, p.size);
+    });
+    ctx.globalAlpha = 1;
+  };
+
+  const drawHazards = () => {
+    hazards.forEach((h) => {
+      const sx = h.x - game.cameraX;
+      ctx.fillStyle = '#e8f7ff';
+      ctx.fillRect(sx - h.w / 2, h.y - h.h / 2, h.w, h.h);
+    });
+  };
+
+  const drawUI = () => {
+    ctx.fillStyle = '#0d1b3d';
+    ctx.fillRect(10, 10, 220, 70);
+    ctx.strokeStyle = '#1a2a4f';
+    ctx.strokeRect(10, 10, 220, 70);
+
+    for (let i = 0; i < player.maxHealth; i++) {
+      const x = 20 + i * 26;
+      ctx.fillStyle = i < player.health ? COLORS.uiRed : '#3b3b3b';
+      ctx.fillRect(x, 20, 6, 18);
+      ctx.fillRect(x + 10, 20, 6, 18);
+      ctx.fillStyle = '#111';
+      ctx.fillRect(x - 2, 38, 20, 3);
+    }
+
+    ctx.fillStyle = '#0b1026';
+    ctx.fillRect(20, 52, 180, 12);
+    ctx.fillStyle = COLORS.uiBlue;
+    ctx.fillRect(20, 52, 180 * (player.stamina / player.maxStamina), 12);
+    ctx.strokeStyle = '#17315e';
+    ctx.strokeRect(20, 52, 180, 12);
+
+    const statsX = VIEW.w - 206;
+    const statsY = 10;
+    const statsW = 196;
+    const statsH = 106;
+    ctx.fillStyle = 'rgba(8,16,37,0.86)';
+    ctx.fillRect(statsX, statsY, statsW, statsH);
+    ctx.strokeStyle = '#2e4f8f';
+    ctx.strokeRect(statsX, statsY, statsW, statsH);
+
+    const drawStat = (text, x, y, color = '#f2fbff') => {
+      ctx.font = '18px "Courier New", monospace';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.strokeText(text, x, y);
+      ctx.fillStyle = color;
+      ctx.fillText(text, x, y);
+    };
+
+    drawStat(`Score ${game.score}`, statsX + 12, statsY + 26);
+    drawStat(`Combo x${game.combo}`, statsX + 12, statsY + 48);
+    drawStat(game.sectionName, statsX + 12, statsY + 70, '#cfe9ff');
+    if (player.hasGun) {
+      drawStat(`GUN ${player.gunBullets}`, statsX + 12, statsY + 92, '#ffcb69');
+    } else if (player.longPoleActive) {
+      drawStat('LONG POLE', statsX + 12, statsY + 92, '#ffd53d');
+    } else if ((game.passed || 0) > 0) {
+      drawStat(`Pressure ${game.passed}`, statsX + 12, statsY + 92, '#ffcb69');
+    } else if (player.attackBoost > 0) {
+      drawStat('POWER', statsX + 12, statsY + 92, COLORS.uiYellow);
+    }
+
+    if (boss.active) {
+      ctx.fillStyle = '#1b233d';
+      ctx.fillRect(VIEW.w / 2 - 160, 12, 320, 14);
+      ctx.fillStyle = '#ff7b00';
+      ctx.fillRect(VIEW.w / 2 - 160, 12, 320 * (boss.health / boss.maxHealth), 14);
+      ctx.strokeStyle = '#2a3a5f';
+      ctx.strokeRect(VIEW.w / 2 - 160, 12, 320, 14);
+    }
+  };
+
+  const drawStartScreen = () => {
+    drawBackground();
+    ctx.fillStyle = 'rgba(0,0,0,0.56)';
+    ctx.fillRect(0, 0, VIEW.w, VIEW.h);
+    ctx.fillStyle = '#e8f7ff';
+    ctx.textAlign = 'left';
+    ctx.font = '48px "Courier New", monospace';
+    ctx.fillText('LATURAIVO', 34, 64);
+    ctx.font = '16px "Courier New", monospace';
+    ctx.fillStyle = '#d2ecff';
+    ctx.fillText("Finnish Ski Beat 'Em Up", 36, 90);
+
+    const boxX = 48;
+    const boxY = 118;
+    const boxW = VIEW.w - 96;
+    const boxH = 306;
+    ctx.fillStyle = 'rgba(8,18,40,0.88)';
+    ctx.fillRect(boxX, boxY, boxW, boxH);
+    ctx.strokeStyle = '#315194';
+    ctx.strokeRect(boxX, boxY, boxW, boxH);
+
+    const leftX = boxX + 20;
+    const rightX = boxX + 468;
+    ctx.fillStyle = '#d5ecff';
+    ctx.font = '17px "Courier New", monospace';
+    ctx.fillText('Controls', leftX, boxY + 30);
+    ctx.font = '15px "Courier New", monospace';
+    ctx.fillText('Arrow Keys  Move', leftX, boxY + 56);
+    ctx.fillText('Z  Pole strike / Shoot (when gun active)', leftX, boxY + 80);
+    ctx.fillText('X  Slalom Slash (stamina)', leftX, boxY + 104);
+    ctx.fillText('C  Nordic Boost (stamina)', leftX, boxY + 128);
+    ctx.fillText('P  Pause   M  Mute', leftX, boxY + 152);
+
+    ctx.fillStyle = '#d5ecff';
+    ctx.font = '17px "Courier New", monospace';
+    ctx.fillText('Power-Ups', rightX, boxY + 30);
+
+    const drawPowerupLine = (frame, label, y) => {
+      if (!drawSprite('collectibles', frame, rightX + 16, y - 6, false)) {
+        ctx.fillStyle = '#9ecbff';
+        ctx.fillRect(rightX + 6, y - 18, 20, 20);
+      }
+      ctx.fillStyle = '#cbe7ff';
+      ctx.font = '15px "Courier New", monospace';
+      ctx.fillText(label, rightX + 40, y);
+    };
+    drawPowerupLine(0, 'Thermos  +1 life', boxY + 62);
+    drawPowerupLine(1, 'Energy   stamina refill', boxY + 96);
+    drawPowerupLine(2, 'Gloves   attack boost', boxY + 130);
+
+    ctx.fillStyle = '#ffcb69';
+    ctx.font = '15px "Courier New", monospace';
+    ctx.fillText('Tip: skipping enemies raises Pressure and slows you down.', leftX, boxY + 194);
+    ctx.fillText('Defeat 5 enemies without damage: Long Pole drops.', leftX, boxY + 218);
+    ctx.fillText('Reach Combo x10: Gun drops (+20 bullets).', leftX, boxY + 242);
+
+    ctx.fillStyle = '#ffcb69';
+    ctx.font = '20px "Courier New", monospace';
+    ctx.fillText('Press Enter or Click to Start', boxX + 228, boxY + boxH - 26);
+  };
+
+  const drawGameOver = (text, subText) => {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, VIEW.w, VIEW.h);
+    ctx.fillStyle = '#e8f7ff';
+    ctx.textAlign = 'center';
+    ctx.font = '44px "Courier New", monospace';
+    ctx.fillText(text, VIEW.w / 2, 240);
+    ctx.font = '18px "Courier New", monospace';
+    ctx.fillText(subText, VIEW.w / 2, 280);
+    ctx.textAlign = 'left';
+  };
+
+  const render = () => {
+    let shakeX = 0;
+    let shakeY = 0;
+    if (game.shakeTime > 0) {
+      game.shakeTime -= 1 / 60;
+      shakeX = rand(-game.shakeStrength, game.shakeStrength);
+      shakeY = rand(-game.shakeStrength, game.shakeStrength);
+    } else {
+      game.shakeStrength = 0;
+    }
+
+    ctx.save();
+    ctx.translate(shakeX, shakeY);
+
+    drawBackground();
+
+    drawHazards();
+    drawItems();
+    drawEnemiesLayer();
+    drawAttacks();
+    drawProjectiles();
+    drawParticles();
+    drawBoss();
+
+    drawSkier(player.x - game.cameraX, player.y);
+
+    ctx.restore();
+
+    if (game.state === 'start') {
+      drawStartScreen();
+      return;
+    }
+
+    drawUI();
+
+    if (game.state === 'paused') {
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(0, 0, VIEW.w, VIEW.h);
+      ctx.fillStyle = '#e8f7ff';
+      ctx.font = '32px "Courier New", monospace';
+      ctx.fillText('PAUSED', 420, 260);
+    }
+
+    if (game.state === 'gameover') {
+      drawGameOver('GAME OVER', 'Returning to title...');
+    }
+    if (game.state === 'victory') {
+      drawGameOver('VICTORY', 'Press R to Restart');
+    }
+  };
+
+  const drawEnemiesLayer = () => {
+    enemies.forEach(drawEnemy);
+  };
+
+  const resetGame = () => {
+    updateTrackBounds();
+    game.state = 'playing';
+    game.time = 0;
+    game.score = 0;
+    game.combo = 0;
+    game.comboTimer = 0;
+    game.cameraX = 0;
+    game.distance = 0;
+    game.shakeTime = 0;
+    game.shakeStrength = 0;
+    game.bossActive = false;
+    game.endTimer = 0;
+    game.sectionName = 'Forest';
+    spawnTimer = 0;
+    nextItemDistance = 500;
+    game.passed = 0;
+    game.longPoleKills = 0;
+    game.longPolePrimed = false;
+    game.gunPrimed = false;
+    game.nextGunCombo = 10;
+
+    player.x = 200;
+    player.y = Math.round((TRACK.top + TRACK.bottom) * 0.5);
+    player.health = player.maxHealth;
+    player.stamina = player.maxStamina;
+    player.invincible = 0;
+    player.attackCooldown = 0;
+    player.slashCooldown = 0;
+    player.boostCooldown = 0;
+    player.boostTimer = 0;
+    player.attackBoost = 0;
+    player.slashAnim = 0;
+    player.shootAnim = 0;
+    player.longPoleActive = false;
+    player.hasGun = false;
+    player.gunBullets = 0;
+    applySpriteSize(player, 'skier');
+    player.sized = false;
+    player.hitAnim = 0;
+
+    enemies.length = 0;
+    projectiles.length = 0;
+    items.length = 0;
+    attacks.length = 0;
+    particles.length = 0;
+    hazards.length = 0;
+
+    boss.active = false;
+    boss.sized = false;
+    playMusic(audio.main);
+  };
+
+  const tick = (ts) => {
+    if (!tick.last) tick.last = ts;
+    const dt = Math.min(0.033, (ts - tick.last) / 1000);
+    tick.last = ts;
+    updateTrackBounds();
+
+    if (game.state === 'start') {
+      if (consumePressed('enter')) {
+        initAudio();
+        resetGame();
+      }
+    } else if (game.state === 'playing') {
+      update(dt);
+      if (consumePressed('p')) game.state = 'paused';
+    } else if (game.state === 'paused') {
+      if (consumePressed('p')) game.state = 'playing';
+    } else if (game.state === 'gameover') {
+      game.endTimer -= dt;
+      if (game.endTimer <= 0) {
+        game.state = 'start';
+      }
+    } else if (game.state === 'victory') {
+      if (consumePressed('r')) resetGame();
+    }
+
+    if (consumePressed('m')) {
+      audio.muted = !audio.muted;
+      if (audio.muted) {
+        stopAllMusic();
+      } else {
+        initAudio();
+        if (game.state === 'playing') playMusic(game.bossActive ? audio.boss : audio.main);
+      }
+    }
+
+    render();
+    requestAnimationFrame(tick);
+  };
+
+  canvas.addEventListener('pointerdown', () => {
+    if (game.state === 'start') {
+      initAudio();
+      resetGame();
+    }
+  });
+
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+
+# Build / cache artifacts
+dist/
+build/
+coverage/
+.cache/
+
+# Python cache (if local scripts are used)
+__pycache__/
+*.pyc

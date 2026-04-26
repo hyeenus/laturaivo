@@ -27,3 +27,10 @@ coverage/
 # Python cache (if local scripts are used)
 __pycache__/
 *.pyc
+
+# Local tooling output
+.playwright-cli/
+output/
+
+# Source/intermediate art files (not used by the game)
+graphics/**/*_raw*.png

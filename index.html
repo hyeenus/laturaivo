@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
 <title>Laturaivo - Finnish Ski Beat 'Em Up</title>
 <style>
   :root {
@@ -154,6 +157,17 @@
     }
   };
 
+  const startPlaying = () => {
+    try {
+      initAudio();
+    } catch (err) {
+      console.warn('Audio init failed, starting muted gameplay.', err);
+      audio.muted = true;
+    }
+    const requestedLevel = new URLSearchParams(window.location.search).get('level');
+    resetGame(requestedLevel === '2' ? 1 : 0);
+  };
+
   const stopAllMusic = () => {
     [audio.main, audio.boss, audio.win].forEach(track => {
       track.pause();
@@ -166,6 +180,26 @@
     if (!audio.muted) {
       track.play().catch(() => {});
     }
+  };
+
+  const playLevelCompleteFanfare = () => {
+    if (!audio.ctx || audio.muted) return;
+    const notes = [392, 523.25, 659.25, 783.99, 1046.5];
+    const now = audio.ctx.currentTime;
+    notes.forEach((freq, index) => {
+      const start = now + index * 0.11;
+      const osc = audio.ctx.createOscillator();
+      const gain = audio.ctx.createGain();
+      osc.type = index === notes.length - 1 ? 'triangle' : 'square';
+      osc.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(index === notes.length - 1 ? 0.22 : 0.16, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + (index === notes.length - 1 ? 0.62 : 0.2));
+      osc.connect(gain);
+      gain.connect(audio.ctx.destination);
+      osc.start(start);
+      osc.stop(start + (index === notes.length - 1 ? 0.68 : 0.24));
+    });
   };
 
   const playSfx = (type) => {
@@ -185,12 +219,13 @@
     if (type === 'hit') { freq = 180; dur = 0.18; osc.type = 'square'; }
     if (type === 'hurt') { freq = 120; dur = 0.3; osc.type = 'sawtooth'; }
     if (type === 'power') { freq = 620; dur = 0.2; osc.type = 'triangle'; }
+    if (type === 'explosion') { freq = 70; dur = 0.42; osc.type = 'sawtooth'; }
 
     filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(1200, now);
+    filter.frequency.setValueAtTime(type === 'explosion' ? 520 : 1200, now);
 
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.25, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(type === 'explosion' ? 0.34 : 0.25, now + 0.02);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
 
     osc.frequency.setValueAtTime(freq, now);
@@ -257,6 +292,17 @@
         { x: 1152, y: 383, w: 331, h: 290 }
       ]
     },
+    skier_carry: {
+      src: 'graphics/level2/skier_run_carry.png',
+      targetH: 54,
+      anchorY: 0.86,
+      frameRects: [
+        { x: 42, y: 338, w: 320, h: 356 },
+        { x: 442, y: 360, w: 286, h: 350 },
+        { x: 792, y: 330, w: 304, h: 368 },
+        { x: 1190, y: 360, w: 306, h: 350 }
+      ]
+    },
     slalom_slash: {
       src: 'graphics/slalom_slash.png',
       targetH: 48,
@@ -280,7 +326,7 @@
       ]
     },
     bird: {
-      src: 'graphics/bird_2.png',
+      src: 'graphics/bird_2_solid.png?v=1',
       targetH: 24,
       anchorY: 0.55,
       frameRects: [
@@ -328,6 +374,71 @@
       anchorY: 0.78,
       frameRects: [{ x: 163, y: 184, w: 1294, h: 544 }]
     },
+    yarddog: {
+      src: 'graphics/level2/yarddog_animation_fixed.png',
+      targetH: 40,
+      anchorY: 0.78,
+      frameRects: [
+        { x: 0, y: 0, w: 320, h: 230 },
+        { x: 320, y: 0, w: 320, h: 230 },
+        { x: 640, y: 0, w: 320, h: 230 },
+        { x: 960, y: 0, w: 320, h: 230 },
+        { x: 1280, y: 0, w: 320, h: 230 },
+        { x: 1600, y: 0, w: 320, h: 230 }
+      ]
+    },
+    thaw_patch: {
+      src: 'graphics/level2/thaw_patch.png',
+      targetH: 64,
+      anchorY: 0.52,
+      frameRects: [{ x: 0, y: 0, w: 1262, h: 144 }]
+    },
+    road_crossing: {
+      src: 'graphics/level2/road_crossing_diagonal.png',
+      targetH: 190,
+      anchorY: 0.55,
+      frameRects: [{ x: 0, y: 0, w: 2172, h: 724 }]
+    },
+    paivaranta_yard_gate: {
+      src: 'graphics/level2/paivaranta_yard_gate.png',
+      targetH: 92,
+      anchorY: 0.78,
+      frameRects: [{ x: 0, y: 0, w: 780, h: 235 }]
+    },
+    pickup_boss: {
+      src: 'graphics/level2/pickup_boss.png',
+      targetH: 94,
+      anchorY: 0.78,
+      frameRects: [
+        { x: 30, y: 410, w: 300, h: 185 },
+        { x: 360, y: 410, w: 290, h: 185 },
+        { x: 665, y: 390, w: 300, h: 205 },
+        { x: 955, y: 390, w: 280, h: 210 },
+        { x: 1215, y: 330, w: 310, h: 280 }
+      ]
+    },
+    salt_hazard: {
+      src: 'graphics/level2/maintenance_hazard_sheet.png',
+      targetH: 74,
+      anchorY: 0.5,
+      frameRects: [
+        { x: 0, y: 0, w: 543, h: 362 },
+        { x: 543, y: 0, w: 543, h: 362 },
+        { x: 1086, y: 0, w: 543, h: 362 },
+        { x: 1629, y: 0, w: 543, h: 362 }
+      ]
+    },
+    sand_hazard: {
+      src: 'graphics/level2/maintenance_hazard_sheet.png',
+      targetH: 74,
+      anchorY: 0.5,
+      frameRects: [
+        { x: 0, y: 362, w: 543, h: 362 },
+        { x: 543, y: 362, w: 543, h: 362 },
+        { x: 1086, y: 362, w: 543, h: 362 },
+        { x: 1629, y: 362, w: 543, h: 362 }
+      ]
+    },
     snowgroomer: {
       src: 'graphics/processed/snow_groomer.png',
       targetH: 110,
@@ -345,7 +456,7 @@
       ]
     },
     snowball_proj: {
-      src: 'graphics/snowball.png',
+      src: 'graphics/snowball_solid.png?v=1',
       targetH: 22,
       anchorY: 0.5,
       frameRects: [{ x: 455, y: 245, w: 697, h: 526 }]
@@ -377,6 +488,10 @@
   };
 
   const backgroundFiles = {
+    level1Main: 'graphics/background_3.png',
+    puijoBack: 'graphics/level2/kuopio_puijo_back.png',
+    kuopioFront: 'graphics/level2/kuopio_spring_front_layer.png?v=5',
+    kuopioSnowFront: 'graphics/bacground_front_layer.png',
     main: 'graphics/background_3.png'
   };
 
@@ -567,7 +682,7 @@
   loadBackgrounds();
 
   const updateTrackBounds = () => {
-    const bg = backgrounds.main;
+    const bg = currentLevel().background === 'kuopio' ? backgrounds.kuopioFront : (backgrounds.level1Main || backgrounds.main);
     if (!bg) {
       TRACK.top = 280;
       TRACK.bottom = 520;
@@ -598,6 +713,7 @@
 
   const game = {
     state: 'start',
+    levelIndex: 0,
     time: 0,
     score: 0,
     combo: 0,
@@ -606,6 +722,8 @@
     shakeTime: 0,
     shakeStrength: 0,
     bossActive: false,
+    pendingLevelIndex: 0,
+    pendingScore: 0,
     endTimer: 0,
     sectionName: 'Forest',
     distance: 0,
@@ -656,21 +774,79 @@
 
   let attackId = 1;
 
-  const sections = [
-    { name: 'Forest', start: 0, end: 2000, spawn: [1.1, 1.6] },
-    { name: 'Tunturi', start: 2000, end: 4200, spawn: [0.9, 1.4] },
-    { name: 'Maintenance', start: 4200, end: 5600, spawn: [0.7, 1.2] }
+  const levelConfigs = [
+    {
+      name: 'Level 1',
+      background: 'level1',
+      sections: [
+        { name: 'Forest', start: 0, end: 2000, spawn: [1.1, 1.6] },
+        { name: 'Tunturi', start: 2000, end: 4200, spawn: [0.9, 1.4] },
+        { name: 'Maintenance', start: 4200, end: 5600, spawn: [0.7, 1.2] }
+      ],
+      enemyProgression: [
+        { start: 0, types: ['rabbit'] },
+        { start: 300, types: ['rabbit', 'bird'] },
+        { start: 2000, types: ['hiker', 'child'] },
+        { start: 3000, types: ['hiker', 'child', 'fatbiker'] },
+        { start: 3600, types: ['hiker', 'child', 'fatbiker', 'reindeer'] },
+        { start: 4300, types: ['fatbiker', 'reindeer', 'snowmobile'] }
+      ],
+      bossStart: 5600,
+      totalLength: 6200,
+      bossMaxHealth: 32,
+      bossType: 'snowcat',
+      crossings: []
+    },
+    {
+      name: 'Level 2',
+      background: 'kuopio',
+      sections: [
+        { name: 'Puijo', start: 0, end: 2600, spawn: [1.1, 1.6] },
+        { name: 'Levänen', start: 2600, end: 6200, spawn: [0.85, 1.35] },
+        { name: 'Päiväranta', start: 6200, end: 9000, spawn: [0.62, 1.05] }
+      ],
+      enemyProgression: [
+        { start: 0, types: ['rabbit', 'bird'] },
+        { start: 1600, types: ['rabbit', 'bird', 'hiker', 'child'] },
+        { start: 2800, types: ['hiker', 'child', 'fatbiker'] },
+        { start: 5000, types: ['fatbiker', 'yarddog', 'yarddog', 'snowmobile'] },
+        { start: 6700, types: ['yarddog', 'yarddog', 'yarddog', 'snowmobile', 'fatbiker'] }
+      ],
+      bossStart: 9000,
+      totalLength: 9800,
+      bossMaxHealth: 32,
+      bossType: 'pickup',
+      crossings: [
+        { start: 1180, end: 1520, sprite: 'thaw_patch', yPad: 4 },
+        { start: 2540, end: 2940, sprite: 'road_crossing', yPad: 16 },
+        { start: 3980, end: 4320, sprite: 'thaw_patch', yPad: 2 },
+        { start: 5660, end: 6080, sprite: 'road_crossing', yPad: 16 },
+        { start: 7060, end: 7420, sprite: 'paivaranta_yard_gate', yPad: 10 },
+        { start: 8100, end: 8460, sprite: 'thaw_patch', yPad: 4 }
+      ]
+    }
   ];
-  const enemyProgression = [
-    { start: 0, types: ['rabbit'] },
-    { start: 300, types: ['rabbit', 'bird'] },
-    { start: 2000, types: ['hiker', 'child'] },
-    { start: 3000, types: ['hiker', 'child', 'fatbiker'] },
-    { start: 3600, types: ['hiker', 'child', 'fatbiker', 'reindeer'] },
-    { start: 4300, types: ['fatbiker', 'reindeer', 'snowmobile'] }
-  ];
-  const bossStart = 5600;
-  const totalLength = 6200;
+  const currentLevel = () => levelConfigs[game.levelIndex] || levelConfigs[0];
+  const isStaticCarryZoneAt = (worldX) => (
+    currentLevel().crossings.some(zone => worldX >= zone.start && worldX <= zone.end)
+  );
+  const isMeltHazardAt = (worldX, worldY) => (
+    hazards.some(h => (
+      h.type === 'salt' &&
+      worldX >= h.x - h.w / 2 &&
+      worldX <= h.x + h.w / 2 &&
+      worldY >= h.y - h.h / 2 - 8 &&
+      worldY <= h.y + h.h / 2 + 8
+    ))
+  );
+  const isRoadCrossing = () => {
+    return isStaticCarryZoneAt(player.x) || isMeltHazardAt(player.x, player.y);
+  };
+  const isCarryBufferActive = () => {
+    const px = player.x;
+    return currentLevel().crossings.some(zone => px >= zone.start - 130 && px <= zone.end + 220) ||
+      hazards.some(h => h.type === 'salt' && Math.abs(h.x - px) < h.w / 2 + 180);
+  };
 
   let spawnTimer = 0;
   let nextItemDistance = 500;
@@ -692,7 +868,18 @@
     plowTimer: 0,
     spinTimer: 0,
     hitCooldown: 0,
-    weakOpen: 0
+    weakOpen: 0,
+    type: 'snowcat',
+    destroying: false,
+    destroyTimer: 0,
+    destroyClearDelay: 0,
+    explosionTimer: 0,
+    saltTimer: 0,
+    throwFxTimer: 0,
+    throwFxKind: 'salt',
+    laneIndex: 0,
+    attackY: 360,
+    attackHitDone: false
   };
 
   const makeEnemy = (type, x, y) => {
@@ -733,15 +920,23 @@
     if (type === 'snowmobile') {
       base.w = 72; base.h = 34; base.speed = 110; base.health = 1;
     }
+    if (type === 'yarddog') {
+      base.w = 58; base.h = 32; base.speed = 135; base.health = 1;
+    }
     applySpriteSize(base, type);
     base.sized = false;
     return base;
   };
 
   const spawnEnemy = () => {
-    const section = sections.find(s => game.distance >= s.start && game.distance < s.end) || sections[sections.length - 1];
+    const level = currentLevel();
+    const section = level.sections.find(s => game.distance >= s.start && game.distance < s.end) || level.sections[level.sections.length - 1];
     game.sectionName = section.name;
-    const pool = enemyProgression.filter(p => game.distance >= p.start).pop().types;
+    if (isCarryBufferActive()) {
+      spawnTimer = Math.max(0.35, rand(section.spawn[0], section.spawn[1]));
+      return;
+    }
+    const pool = level.enemyProgression.filter(p => game.distance >= p.start).pop().types;
     const type = pool[randi(0, pool.length - 1)];
     const x = game.cameraX + VIEW.w + rand(80, 260);
     const y = rand(TRACK.top + 30, TRACK.bottom - 20);
@@ -870,9 +1065,20 @@
   const getEnemyFrame = (e) => {
     const sprite = sprites[e.type];
     if (!sprite || sprite.frames.length <= 1) return 0;
+    if (e.type === 'yarddog') {
+      if (e.state === 'lunge') return 3;
+      if (e.state === 'recover') return 4;
+      return Math.floor(game.time * 12 + e.animOffset) % 3;
+    }
     const speedMap = { rabbit: 14, bird: 8, child: 9, reindeer: 10 };
     const speed = speedMap[e.type] || 7;
     return Math.floor(game.time * speed + e.animOffset) % sprite.frames.length;
+  };
+
+  const getEnemyFlip = (e) => {
+    if (e.type === 'yarddog') return e.vx > 0;
+    if (e.type === 'snowmobile') return false;
+    return e.vx < 0;
   };
 
   const getPlayerBaseSheet = () => {
@@ -885,6 +1091,7 @@
   };
 
   const attackBasic = () => {
+    if (isRoadCrossing()) return;
     if (player.attackCooldown > 0) return;
     player.attackCooldown = 0.25;
     player.hitAnim = 0.32;
@@ -909,6 +1116,7 @@
   };
 
   const shootGun = () => {
+    if (isRoadCrossing()) return;
     if (!player.hasGun || player.gunBullets <= 0 || player.attackCooldown > 0) return;
     const dir = player.facing || 1;
     player.attackCooldown = 0.16;
@@ -939,6 +1147,7 @@
   };
 
   const attackSlash = () => {
+    if (isRoadCrossing()) return;
     if (player.slashCooldown > 0 || player.stamina < 35) return;
     player.slashCooldown = 1.2;
     player.stamina = Math.max(0, player.stamina - 35);
@@ -1038,21 +1247,237 @@
     if (game.bossActive) return;
     game.bossActive = true;
     boss.active = true;
+    boss.type = currentLevel().bossType || 'snowcat';
+    boss.maxHealth = currentLevel().bossMaxHealth || boss.maxHealth;
     boss.health = boss.maxHealth;
     boss.phase = 1;
-    boss.pattern = 'plow';
+    boss.pattern = boss.type === 'pickup' ? 'salt' : 'plow';
+    boss.patternTime = 0;
     boss.patternTimer = 0.5;
     boss.offsetX = 0;
+    boss.hitCooldown = 0;
+    boss.weakOpen = 0;
+    boss.destroying = false;
+    boss.destroyTimer = 0;
+    boss.destroyClearDelay = 0;
+    boss.explosionTimer = 0;
+    boss.saltTimer = 0.35;
+    boss.throwFxTimer = 0;
+    boss.throwFxKind = 'salt';
+    boss.laneIndex = 0;
+    boss.attackHitDone = false;
+    boss.x = game.cameraX + VIEW.w - (boss.type === 'pickup' ? 160 : 250);
     boss.y = (TRACK.top + TRACK.bottom) * 0.5;
-    applySpriteSize(boss, 'snowgroomer');
+    boss.attackY = boss.y;
+    applySpriteSize(boss, boss.type === 'pickup' ? 'pickup_boss' : 'snowgroomer');
+    boss.sized = false;
     enemies.length = 0;
     projectiles.length = 0;
     hazards.length = 0;
     playMusic(audio.boss);
   };
 
+  const spawnExplosionBurst = (x, y, scale = 1) => {
+    playSfx('explosion');
+    addShake(8 * scale, 0.22);
+    spawnHitParticles(x, y, '#ffbf3d', Math.round(12 * scale));
+    spawnHitParticles(x, y, '#ff4b28', Math.round(8 * scale));
+    spawnHitParticles(x, y, '#5d6470', Math.round(10 * scale));
+  };
+
+  const beginBossDestruction = () => {
+    if (boss.destroying) return;
+    boss.health = 0;
+    boss.destroying = true;
+    boss.destroyClearDelay = boss.type === 'pickup' ? 0.25 : 0.35;
+    boss.destroyTimer = (boss.type === 'pickup' ? 3.2 : 3.0) + boss.destroyClearDelay;
+    boss.explosionTimer = 0;
+    boss.pattern = 'destroying';
+    boss.throwFxTimer = 0;
+    projectiles.length = 0;
+    spawnExplosionBurst(boss.x - 30, boss.y, 1.2);
+  };
+
+  const canDamageBoss = (weakHit = false) => {
+    if (!boss.active || boss.destroying) return false;
+    if (boss.type !== 'pickup') return true;
+    return boss.weakOpen > 0 || boss.pattern === 'reverse';
+  };
+
+  const damageBoss = (damage, x, y, weakHit = false) => {
+    if (boss.hitCooldown > 0 || !canDamageBoss(weakHit)) {
+      if (boss.type === 'pickup') {
+        spawnHitParticles(x, y, COLORS.enemyGray, 4);
+        addShake(1.2, 0.05);
+      }
+      return false;
+    }
+    const bonus = boss.type === 'pickup'
+      ? (boss.weakOpen > 0 || boss.pattern === 'reverse' ? 1 : 0)
+      : (weakHit || boss.weakOpen > 0 ? 1 : 0);
+    boss.health -= damage + bonus;
+    boss.hitCooldown = 0.2;
+    spawnHitParticles(x, y, COLORS.enemyYellow, 10);
+    addShake(3, 0.1);
+    if (boss.health <= 0) beginBossDestruction();
+    return true;
+  };
+
+  const spawnMaintenancePatch = (kind, x, y, wide = false) => {
+    if (hazards.filter(h => h.type === 'salt' || h.type === 'sand').length >= 5) return;
+    const px = boss.x - boss.w * 0.35;
+    const py = boss.y - boss.h * 0.34;
+    const color = kind === 'salt' ? '#e9f8ff' : '#d0a166';
+    hazards.push({
+      x,
+      y: clamp(y, TRACK.top + 34, TRACK.bottom - 34),
+      w: wide ? rand(112, 138) : rand(82, 108),
+      h: wide ? rand(42, 52) : rand(34, 44),
+      life: kind === 'salt' ? rand(4.2, 5.1) : rand(3.1, 4.0),
+      type: kind,
+      age: 0,
+      throwX: px,
+      throwY: py,
+      landDelay: 0.42
+    });
+    boss.throwFxTimer = 0.42;
+    boss.throwFxKind = kind;
+    for (let i = 0; i < 12; i++) {
+      particles.push({
+        x: px,
+        y: py,
+        vx: (x - px) * rand(1.1, 1.55) + rand(-45, 45),
+        vy: (y - py) * rand(1.0, 1.35) - rand(85, 145),
+        life: rand(0.35, 0.62),
+        size: rand(1.5, 3),
+        color
+      });
+    }
+  };
+
+  const updateDestroyingBoss = (dt) => {
+    boss.destroyTimer -= dt;
+    boss.explosionTimer -= dt;
+    boss.hitCooldown = 999;
+    const clearDelay = boss.destroyClearDelay || 0;
+    if (boss.destroyTimer > clearDelay && boss.explosionTimer <= 0) {
+      boss.explosionTimer = rand(0.13, 0.28);
+      const spreadX = boss.type === 'pickup' ? boss.w * 0.34 : boss.w * 0.4;
+      const spreadY = boss.type === 'pickup' ? boss.h * 0.28 : boss.h * 0.34;
+      spawnExplosionBurst(
+        boss.x + rand(-spreadX, spreadX),
+        boss.y + rand(-spreadY, spreadY),
+        rand(0.7, 1.15)
+      );
+    }
+    if (boss.destroyTimer <= 0) {
+      boss.active = false;
+      game.bossActive = false;
+      game.score += 2500;
+      playLevelCompleteFanfare();
+      completeLevel();
+    }
+  };
+
+  const pickupRamHitsPlayer = () => {
+    const playerGeom = getSpriteRenderGeom(getPlayerBaseSheet(), 0, player.x, player.y, player.facing < 0);
+    const bossGeom = getSpriteRenderGeom('pickup_boss', 1, boss.x, boss.y, false);
+    if (!playerGeom || !bossGeom) return false;
+
+    const bossW = bossGeom.right - bossGeom.left;
+    const bossH = bossGeom.bottom - bossGeom.top;
+    const plowFront = {
+      left: bossGeom.left + bossW * 0.02,
+      right: bossGeom.left + bossW * 0.24,
+      top: bossGeom.top + bossH * 0.34,
+      bottom: bossGeom.top + bossH * 0.82
+    };
+    const playerCore = shrinkGeomBox(playerGeom, 0.48, 0.62);
+    if (!aabbOverlap(plowFront, playerCore)) return false;
+    if (bossGeom.mask && playerGeom.mask) return pixelPerfectOverlap(bossGeom, playerGeom);
+    return true;
+  };
+
+  const updatePickupBoss = (dt) => {
+    if (!boss.sized && sprites.pickup_boss) {
+      applySpriteSize(boss, 'pickup_boss');
+      boss.sized = true;
+    }
+    const rightEdge = game.cameraX + VIEW.w - 155;
+    const laneYs = [
+      TRACK.top + 48,
+      (TRACK.top + TRACK.bottom) * 0.5,
+      TRACK.bottom - 52
+    ];
+    boss.phase = boss.health > boss.maxHealth * 0.5 ? 1 : 2;
+    boss.patternTime += dt;
+    boss.saltTimer -= dt;
+    boss.throwFxTimer = Math.max(0, boss.throwFxTimer - dt);
+
+    if (boss.pattern === 'salt') {
+      boss.x = lerp(boss.x, rightEdge, 0.08);
+      boss.y = clamp(boss.y + (player.y - boss.y) * 0.012, TRACK.top + boss.h * 0.45, TRACK.bottom - 12);
+      boss.weakOpen = 0;
+      if (boss.saltTimer <= 0) {
+        boss.saltTimer = boss.phase === 2 ? 0.72 : 0.98;
+        boss.laneIndex = (boss.laneIndex + 1 + randi(0, 1)) % laneYs.length;
+        const kind = Math.floor(boss.patternTime / 1.7) % 2 === 0 ? 'salt' : 'sand';
+        spawnMaintenancePatch(kind, boss.x - rand(170, 330), laneYs[boss.laneIndex] + rand(-14, 14), false);
+      }
+      if (boss.x - player.x < 390 || boss.patternTime > 2.4) {
+        boss.pattern = 'ram';
+        boss.patternTime = 0;
+        boss.attackY = boss.y;
+        boss.attackHitDone = false;
+        boss.saltTimer = 0.25;
+      }
+    } else if (boss.pattern === 'ram') {
+      boss.weakOpen = 0;
+      boss.y = boss.attackY;
+      boss.x -= (boss.phase === 2 ? 410 : 340) * dt;
+      if (!boss.attackHitDone && pickupRamHitsPlayer()) {
+        boss.attackHitDone = true;
+        damagePlayer(1);
+      }
+      if (boss.patternTime > 0.72 || boss.x < player.x + 120) {
+        boss.pattern = 'reverse';
+        boss.patternTime = 0;
+        boss.saltTimer = 0.18;
+        boss.weakOpen = 0.35;
+      }
+    } else if (boss.pattern === 'reverse') {
+      boss.weakOpen = 0.25;
+      boss.y = boss.attackY;
+      boss.x += (boss.phase === 2 ? 250 : 205) * dt;
+      if (boss.saltTimer <= 0) {
+        boss.saltTimer = boss.phase === 2 ? 0.58 : 0.74;
+        boss.laneIndex = (boss.laneIndex + 1) % laneYs.length;
+        const kind = Math.floor(boss.patternTime / 1.2) % 2 === 0 ? 'sand' : 'salt';
+        spawnMaintenancePatch(kind, boss.x - rand(90, 230), laneYs[boss.laneIndex] + rand(-16, 16), true);
+      }
+      if (boss.x >= rightEdge) {
+        boss.x = rightEdge;
+        boss.pattern = 'salt';
+        boss.patternTime = 0;
+        boss.saltTimer = 0.45;
+        boss.weakOpen = 0;
+      }
+    }
+  };
+
   const updateBoss = (dt) => {
     if (!boss.active) return;
+
+    if (boss.destroying) {
+      updateDestroyingBoss(dt);
+      return;
+    }
+
+    if (boss.type === 'pickup') {
+      boss.hitCooldown = Math.max(0, boss.hitCooldown - dt);
+      updatePickupBoss(dt);
+      return;
+    }
 
     if (!boss.sized && sprites.snowgroomer) {
       applySpriteSize(boss, 'snowgroomer');
@@ -1076,6 +1501,7 @@
       boss.plowTimer = 0;
       boss.spinTimer = 0;
       boss.cannonTimer = 0;
+      boss.attackHitDone = false;
       boss.patternTimer = boss.pattern === 'cannon' ? 2.2 : 1.6;
       if (boss.phase === 3) boss.patternTimer *= 0.85;
     }
@@ -1090,9 +1516,10 @@
       } else {
         boss.offsetX = 0;
       }
-      const plowHit = { x: boss.x - 30, y: boss.y - boss.h / 2 + 10, w: 60, h: boss.h - 20 };
+      const plowHit = { x: boss.x - 24, y: boss.y - boss.h * 0.32, w: 44, h: boss.h * 0.58 };
       const playerBox = { x: player.x - player.w / 2, y: player.y - player.h / 2, w: player.w, h: player.h };
-      if (rectOverlap(plowHit, playerBox)) {
+      if (!boss.attackHitDone && rectOverlap(plowHit, playerBox)) {
+        boss.attackHitDone = true;
         damagePlayer(1);
       }
     }
@@ -1102,12 +1529,8 @@
       if (Math.floor(boss.spinTimer * 12) % 2 === 0) {
         spawnHitParticles(boss.x - 30, boss.y, COLORS.enemyGray, 2);
       }
-      const spinRadius = boss.phase === 3 ? 110 : 95;
-      const dx = player.x - boss.x;
-      const dy = player.y - boss.y;
-      if (Math.hypot(dx, dy) < spinRadius) {
-        damagePlayer(1);
-      }
+      // Spin is a visual pressure/weakness window only. Damage must come from
+      // visible contact or projectiles, not an invisible aura.
       boss.weakOpen = 0.2;
     }
 
@@ -1141,11 +1564,7 @@
     }
 
     if (boss.health <= 0) {
-      boss.active = false;
-      game.bossActive = false;
-      game.score += 2500;
-      game.state = 'victory';
-      playMusic(audio.win);
+      beginBossDestruction();
     }
   };
 
@@ -1342,13 +1761,52 @@
         }
       }
 
+      if (e.type === 'yarddog') {
+        const dx = player.x - e.x;
+        const dy = player.y - e.y;
+        if (e.state === 'lunge') {
+          e.lungeTimer -= dt;
+          if (e.lungeTimer <= 0) {
+            e.state = 'recover';
+            e.lungeTimer = 0.36;
+            e.vx = -70;
+            e.vy *= 0.25;
+          }
+        } else if (e.state === 'recover') {
+          e.lungeTimer -= dt;
+          e.vx = -85;
+          e.vy *= 0.92;
+          if (e.lungeTimer <= 0) {
+            e.state = 'idle';
+            e.attackTimer = rand(0.65, 1.15);
+          }
+        } else {
+          e.vx = -125;
+          if (e.aiTimer <= 0) {
+            e.aiTimer = rand(0.25, 0.55);
+            e.vy = rand(-55, 55);
+          }
+          if (e.attackTimer <= 0 && dx < -24 && dx > -230 && Math.abs(dy) < 150) {
+            e.state = 'lunge';
+            e.lungeTimer = 0.42;
+            e.vx = -285;
+            e.vy = clamp(dy * 3.2, -270, 270);
+            addShake(2, 0.08);
+          }
+        }
+      }
+
       e.x += e.vx * dt;
       e.y += e.vy * dt;
       const topBound = e.type === 'bird' ? Math.max(30, TRACK.top - 90) : TRACK.top + e.h / 2;
       e.y = clamp(e.y, topBound, TRACK.bottom - e.h / 2);
+      if (isCarryBufferActive() && e.x > player.x - 90 && e.x < player.x + 260 && Math.abs(e.y - player.y) < 76) {
+        e.x += 150 * dt;
+        e.vx = Math.max(e.vx, -20);
+      }
 
       const enemyFrame = getEnemyFrame(e);
-      const enemyGeom = getSpriteRenderGeom(e.type, enemyFrame, e.x, e.y, e.vx < 0);
+      const enemyGeom = getSpriteRenderGeom(e.type, enemyFrame, e.x, e.y, getEnemyFlip(e));
       if (playerGeom && enemyGeom) {
         const canPixel = !!(playerGeom.mask && enemyGeom.mask);
         let collided = false;
@@ -1458,15 +1916,9 @@
         if (boss.active) {
           const bossBox = { x: boss.x - boss.w / 2, y: boss.y - boss.h / 2, w: boss.w, h: boss.h };
           if (rectOverlap(hitBox, bossBox)) {
-            if (boss.hitCooldown <= 0) {
-              const weakBox = { x: boss.x + boss.w / 2 - 55, y: boss.y - 20, w: 40, h: 40 };
-              const weakHit = rectOverlap(hitBox, weakBox);
-              const applied = weakHit || boss.weakOpen > 0 ? a.damage + 1 : a.damage;
-              boss.health -= applied;
-              boss.hitCooldown = 0.2;
-              spawnHitParticles(boss.x - 30, boss.y, COLORS.enemyYellow, 10);
-              addShake(3, 0.1);
-            }
+            const weakBox = { x: boss.x + boss.w / 2 - 55, y: boss.y - 20, w: 40, h: 40 };
+            const weakHit = rectOverlap(hitBox, weakBox);
+            damageBoss(a.damage, boss.x - 30, boss.y, weakHit);
           }
         }
       }
@@ -1483,13 +1935,7 @@
           const dx = boss.x - a.x;
           const dy = boss.y - a.y;
           if (Math.hypot(dx, dy) < a.radius + 30) {
-            if (boss.hitCooldown <= 0) {
-              const applied = boss.weakOpen > 0 ? a.damage + 1 : a.damage;
-              boss.health -= applied;
-              boss.hitCooldown = 0.2;
-              spawnHitParticles(boss.x - 20, boss.y, COLORS.enemyYellow, 12);
-              addShake(4, 0.12);
-            }
+            damageBoss(a.damage, boss.x - 20, boss.y, false);
           }
         }
       }
@@ -1561,12 +2007,9 @@
           if (rectOverlap(projBox, bossBox) && boss.hitCooldown <= 0) {
             const weakBox = { x: boss.x + boss.w / 2 - 55, y: boss.y - 20, w: 40, h: 40 };
             const weakHit = rectOverlap(projBox, weakBox);
-            const baseDamage = p.damage || 1;
-            const applied = weakHit || boss.weakOpen > 0 ? baseDamage + 1 : baseDamage;
-            boss.health -= applied;
-            boss.hitCooldown = 0.16;
-            spawnHitParticles(p.x, p.y, COLORS.enemyYellow, 8);
-            addShake(2, 0.08);
+            if (damageBoss(p.damage || 1, p.x, p.y, weakHit)) {
+              boss.hitCooldown = 0.16;
+            }
             p.dead = true;
           }
         }
@@ -1626,11 +2069,7 @@
     for (let i = hazards.length - 1; i >= 0; i--) {
       const h = hazards[i];
       h.life -= dt;
-      const hazardBox = { x: h.x - h.w / 2, y: h.y - h.h / 2, w: h.w, h: h.h };
-      const playerBox = { x: player.x - player.w / 2, y: player.y - player.h / 2, w: player.w, h: player.h };
-      if (rectOverlap(hazardBox, playerBox)) {
-        damagePlayer(1);
-      }
+      h.age = (h.age || 0) + dt;
       if (h.life <= 0) {
         hazards.splice(i, 1);
       }
@@ -1659,14 +2098,36 @@
       spawnItem(Math.random() < 0.5 ? 'energy' : 'thermos', game.cameraX + VIEW.w + rand(40, 120), rand(TRACK.top + 40, TRACK.bottom - 40));
       nextItemDistance += rand(500, 800);
     }
-    if (game.distance >= bossStart && !game.bossActive) {
+    const bossStart = currentLevel().bossStart;
+    if (bossStart !== null && game.distance >= bossStart && !game.bossActive) {
       startBossFight();
     }
   };
 
   const updateSectionName = () => {
+    const sections = currentLevel().sections;
     const section = sections.find(s => game.distance >= s.start && game.distance < s.end) || sections[sections.length - 1];
     game.sectionName = section.name;
+  };
+
+  const completeLevel = () => {
+    if (game.levelIndex < levelConfigs.length - 1) {
+      game.pendingLevelIndex = game.levelIndex + 1;
+      game.pendingScore = game.score;
+      game.levelIndex = game.pendingLevelIndex;
+      game.sectionName = currentLevel().sections[0].name;
+      updateTrackBounds();
+      game.state = 'levelintro';
+      game.bossActive = false;
+      attacks.length = 0;
+      projectiles.length = 0;
+      enemies.length = 0;
+      hazards.length = 0;
+      playMusic(audio.main);
+      return;
+    }
+    game.state = 'victory';
+    playMusic(audio.win);
   };
 
   const update = (dt) => {
@@ -1680,7 +2141,7 @@
     }
 
     updatePlayer(dt);
-    game.score += Math.floor(player.vx * dt * 0.15);
+    game.score += Math.floor(Math.max(0, player.vx) * dt * 0.15);
     updateSectionName();
     updateSpawns(dt);
     updateEnemies(dt);
@@ -1690,34 +2151,67 @@
     updateParticles(dt);
     updateHazards(dt);
     updateBoss(dt);
+    if (game.state !== 'playing') return;
 
-    if (game.distance > totalLength && !boss.active) {
-      game.state = 'victory';
-      playMusic(audio.win);
+    if (game.distance > currentLevel().totalLength && !boss.active) {
+      completeLevel();
     }
   };
 
-  const drawBackgroundImage = (img, speed, alpha = 1) => {
+  const drawBackgroundImage = (img, speed, alpha = 1, mirrored = false) => {
     if (!img) return;
     const scale = VIEW.h / img.height;
     const drawW = Math.round(img.width * scale);
     const offset = ((game.cameraX * speed) % drawW + drawW) % drawW;
     ctx.globalAlpha = alpha;
-    for (let x = -offset; x < VIEW.w + drawW; x += drawW) {
-      ctx.drawImage(img, Math.round(x), 0, drawW, VIEW.h);
+    let tileIndex = Math.floor((game.cameraX * speed) / drawW);
+    for (let x = -offset; x < VIEW.w + drawW; x += drawW, tileIndex++) {
+      if (mirrored && Math.abs(tileIndex) % 2 === 1) {
+        ctx.save();
+        ctx.translate(Math.round(x) + drawW, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(img, 0, 0, drawW, VIEW.h);
+        ctx.restore();
+      } else {
+        ctx.drawImage(img, Math.round(x), 0, drawW, VIEW.h);
+      }
     }
+    ctx.globalAlpha = 1;
+  };
+
+  const drawBackgroundCover = (img, alpha = 1) => {
+    if (!img) return;
+    const scale = Math.max(VIEW.w / img.width, VIEW.h / img.height);
+    const drawW = Math.round(img.width * scale);
+    const drawH = Math.round(img.height * scale);
+    const x = Math.round((VIEW.w - drawW) * 0.5);
+    const y = Math.round((VIEW.h - drawH) * 0.28);
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(img, x, y, drawW, drawH);
     ctx.globalAlpha = 1;
   };
 
   const drawBackground = () => {
     updateTrackBounds();
     if (backgroundsReady) {
-      const primary = backgrounds.main;
-      drawBackgroundImage(primary, 1, 1);
+      if (currentLevel().background === 'kuopio') {
+        drawBackgroundCover(backgrounds.puijoBack, 1);
+        drawBackgroundImage(backgrounds.kuopioFront, 1, 1, true);
+      } else {
+        drawBackgroundImage(backgrounds.level1Main || backgrounds.main, 1, 1);
+      }
     } else {
       ctx.fillStyle = COLORS.skyMid;
       ctx.fillRect(0, 0, VIEW.w, VIEW.h);
     }
+  };
+
+  const drawLevelObjects = () => {
+    currentLevel().crossings.forEach((zone) => {
+      const x = zone.start + (zone.end - zone.start) * 0.5 - game.cameraX;
+      if (x < -420 || x > VIEW.w + 420) return;
+      drawSprite(zone.sprite, 0, x, TRACK.top + 92 + (zone.yPad || 0), false);
+    });
   };
 
   const drawSprite = (name, frameIndex, x, y, flip = false, opts = null) => {
@@ -1740,10 +2234,11 @@
   };
 
   const drawSkier = (x, y) => {
+    const useCarry = isRoadCrossing() && sprites.skier_carry && player.slashAnim <= 0 && player.shootAnim <= 0;
     const useShoot = player.shootAnim > 0 && player.hasGun && sprites.skier_shooting;
     const useSlash = player.slashAnim > 0 && sprites.slalom_slash;
     const baseSheet = getPlayerBaseSheet();
-    const sheet = useSlash && !useShoot ? 'slalom_slash' : baseSheet;
+    const sheet = useCarry ? 'skier_carry' : (useSlash && !useShoot ? 'slalom_slash' : baseSheet);
     const frameCount = sprites[sheet] ? sprites[sheet].frames.length : 4;
     let frame = Math.floor(game.time * 10) % frameCount;
     if (useSlash && !useShoot) {
@@ -1794,7 +2289,7 @@
     const sx = e.x - game.cameraX;
     const sy = e.y;
     const frame = getEnemyFrame(e);
-    if (drawSprite(e.type, frame, sx, sy, e.vx < 0)) return;
+    if (drawSprite(e.type, frame, sx, sy, getEnemyFlip(e))) return;
     ctx.save();
     ctx.translate(sx, sy);
     let body = COLORS.enemyGreen;
@@ -1829,7 +2324,48 @@
     if (!boss.active) return;
     const sx = boss.x - game.cameraX;
     const sy = boss.y;
-    if (drawSprite('snowgroomer', 0, sx, sy, false)) return;
+    const destructionAlpha = boss.destroying ? clamp((boss.destroyTimer - (boss.destroyClearDelay || 0)) / 0.8, 0, 1) : 1;
+    if (boss.type === 'pickup') {
+      let frame = 0;
+      if (boss.pattern === 'ram') frame = 1;
+      if (boss.pattern === 'reverse') frame = 3;
+      if (boss.pattern === 'salt' && boss.throwFxTimer > 0) frame = 2;
+      if (boss.destroying) frame = 4;
+      const filter = boss.destroying && Math.floor(game.time * 16) % 2 === 0 ? 'brightness(1.8) saturate(1.5)' : null;
+      const rendered = drawSprite('pickup_boss', frame, sx, sy, false, { filter, alpha: destructionAlpha });
+      if (boss.throwFxTimer > 0) {
+        const t = clamp(boss.throwFxTimer / 0.42, 0, 1);
+        const color = boss.throwFxKind === 'salt' ? '#e9f8ff' : '#c8914b';
+        const glow = boss.throwFxKind === 'salt' ? '#7fdcff' : '#8a5d2c';
+        const grainCount = boss.throwFxKind === 'salt' ? 24 : 18;
+        ctx.save();
+        ctx.globalAlpha = 0.35 + 0.55 * t;
+        ctx.strokeStyle = glow;
+        ctx.lineWidth = boss.throwFxKind === 'salt' ? 3 : 2;
+        ctx.beginPath();
+        ctx.moveTo(sx - boss.w * 0.28, sy - boss.h * 0.42);
+        ctx.quadraticCurveTo(
+          sx - boss.w * 0.86,
+          sy - boss.h * (boss.throwFxKind === 'salt' ? 0.94 : 0.72),
+          sx - boss.w * 1.35,
+          sy - (boss.throwFxKind === 'salt' ? 16 : 3)
+        );
+        ctx.stroke();
+        ctx.fillStyle = color;
+        for (let i = 0; i < grainCount; i++) {
+          const p = i / (grainCount - 1);
+          const arcX = sx - boss.w * (0.28 + p * 1.08) + Math.sin(game.time * 18 + i) * 5;
+          const arcY = sy - boss.h * (0.42 + Math.sin(p * Math.PI) * (boss.throwFxKind === 'salt' ? 0.48 : 0.3)) + p * 30;
+          const size = boss.throwFxKind === 'salt' ? (2 + (i % 2)) : (2 + (i % 3));
+          ctx.fillRect(arcX, arcY, size, size);
+        }
+        ctx.restore();
+      }
+      if (rendered) return;
+    } else {
+      const filter = boss.destroying && Math.floor(game.time * 18) % 2 === 0 ? 'brightness(1.9) saturate(1.6)' : null;
+      if (drawSprite('snowgroomer', 0, sx, sy, false, { filter, alpha: destructionAlpha })) return;
+    }
     ctx.save();
     ctx.translate(sx, sy);
     ctx.fillStyle = COLORS.bossSteel;
@@ -1958,6 +2494,18 @@
   const drawHazards = () => {
     hazards.forEach((h) => {
       const sx = h.x - game.cameraX;
+      if (h.type === 'salt' || h.type === 'sand') {
+        const fade = clamp(h.life / 0.75, 0, 1);
+        const sheet = h.type === 'salt' ? 'salt_hazard' : 'sand_hazard';
+        const age = h.age || 0;
+        const frame = h.type === 'salt'
+          ? (age < 0.16 ? 0 : age < 0.34 ? 1 : age < 0.62 ? 2 : 3)
+          : (age < 0.12 ? 0 : age < 0.26 ? 1 : age < 0.46 ? 2 : 3);
+        ctx.globalAlpha = fade;
+        drawSprite(sheet, frame, sx, h.y, false);
+        ctx.globalAlpha = 1;
+        return;
+      }
       ctx.fillStyle = '#e8f7ff';
       ctx.fillRect(sx - h.w / 2, h.y - h.h / 2, h.w, h.h);
     });
@@ -2087,6 +2635,34 @@
     ctx.fillText('Press Enter or Click to Start', boxX + 228, boxY + boxH - 26);
   };
 
+  const drawLevelIntro = () => {
+    drawBackground();
+    ctx.fillStyle = 'rgba(0,0,0,0.62)';
+    ctx.fillRect(0, 0, VIEW.w, VIEW.h);
+    const boxX = 82;
+    const boxY = 120;
+    const boxW = VIEW.w - 164;
+    const boxH = 286;
+    ctx.fillStyle = 'rgba(8,18,40,0.9)';
+    ctx.fillRect(boxX, boxY, boxW, boxH);
+    ctx.strokeStyle = '#315194';
+    ctx.strokeRect(boxX, boxY, boxW, boxH);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#e8f7ff';
+    ctx.font = '34px "Courier New", monospace';
+    ctx.fillText('LEVEL 2: KUOPIO SPRING', boxX + 26, boxY + 48);
+    ctx.font = '16px "Courier New", monospace';
+    ctx.fillStyle = '#cfe9ff';
+    ctx.fillText('Thawed ground and road crossings force you to carry your skis.', boxX + 28, boxY + 92);
+    ctx.fillText('While carrying skis, Z attacks, shooting, and X Slalom Slash are disabled.', boxX + 28, boxY + 120);
+    ctx.fillText('Use movement and Nordic Boost to cross open ground safely.', boxX + 28, boxY + 148);
+    ctx.fillText('Salt forces you to carry skis; sand marks rough lanes but does not hurt.', boxX + 28, boxY + 176);
+    ctx.fillStyle = '#ffcb69';
+    ctx.font = '20px "Courier New", monospace';
+    ctx.fillText('Press Enter or Click to Continue', boxX + 180, boxY + boxH - 36);
+  };
+
   const drawGameOver = (text, subText) => {
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
     ctx.fillRect(0, 0, VIEW.w, VIEW.h);
@@ -2115,6 +2691,7 @@
 
     drawBackground();
 
+    drawLevelObjects();
     drawHazards();
     drawItems();
     drawEnemiesLayer();
@@ -2129,6 +2706,11 @@
 
     if (game.state === 'start') {
       drawStartScreen();
+      return;
+    }
+
+    if (game.state === 'levelintro') {
+      drawLevelIntro();
       return;
     }
 
@@ -2154,11 +2736,12 @@
     enemies.forEach(drawEnemy);
   };
 
-  const resetGame = () => {
+  const resetGame = (levelIndex = 0, keepScore = false) => {
+    game.levelIndex = levelIndex;
     updateTrackBounds();
     game.state = 'playing';
     game.time = 0;
-    game.score = 0;
+    if (!keepScore) game.score = 0;
     game.combo = 0;
     game.comboTimer = 0;
     game.cameraX = 0;
@@ -2167,7 +2750,7 @@
     game.shakeStrength = 0;
     game.bossActive = false;
     game.endTimer = 0;
-    game.sectionName = 'Forest';
+    game.sectionName = currentLevel().sections[0].name;
     spawnTimer = 0;
     nextItemDistance = 500;
     game.passed = 0;
@@ -2204,6 +2787,12 @@
 
     boss.active = false;
     boss.sized = false;
+    boss.destroying = false;
+    boss.destroyTimer = 0;
+    boss.destroyClearDelay = 0;
+    boss.explosionTimer = 0;
+    boss.hitCooldown = 0;
+    boss.weakOpen = 0;
     playMusic(audio.main);
   };
 
@@ -2215,12 +2804,16 @@
 
     if (game.state === 'start') {
       if (consumePressed('enter')) {
-        initAudio();
-        resetGame();
+        startPlaying();
       }
     } else if (game.state === 'playing') {
       update(dt);
       if (consumePressed('p')) game.state = 'paused';
+    } else if (game.state === 'levelintro') {
+      if (consumePressed('enter')) {
+        game.score = game.pendingScore || game.score;
+        resetGame(game.pendingLevelIndex, true);
+      }
     } else if (game.state === 'paused') {
       if (consumePressed('p')) game.state = 'playing';
     } else if (game.state === 'gameover') {
@@ -2248,8 +2841,10 @@
 
   canvas.addEventListener('pointerdown', () => {
     if (game.state === 'start') {
-      initAudio();
-      resetGame();
+      startPlaying();
+    } else if (game.state === 'levelintro') {
+      game.score = game.pendingScore || game.score;
+      resetGame(game.pendingLevelIndex, true);
     }
   });
 

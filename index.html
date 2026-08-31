@@ -6,6 +6,7 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
 <meta http-equiv="Pragma" content="no-cache" />
 <meta http-equiv="Expires" content="0" />
+<link rel="icon" href="data:," />
 <title>Laturaivo - Finnish Ski Beat 'Em Up</title>
 <style>
   :root {
@@ -131,12 +132,79 @@
     return false;
   };
 
+  const clearInputState = () => {
+    Object.keys(keys).forEach(k => { keys[k] = false; });
+    pressed.clear();
+  };
+  window.addEventListener('blur', clearInputState);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) clearInputState();
+  });
+
   const audio = {
     ctx: null,
     muted: false,
+    sfxBuffers: {},
+    sfxLoading: false,
     main: new Audio('assets/audio/music1.mp3'),
     boss: new Audio('assets/audio/music2.mp3'),
     win: new Audio('assets/audio/music3.mp3')
+  };
+
+  // Custom sound effects (generated with Suno, trimmed/normalized) loaded as
+  // Web Audio buffers for low-latency, overlapping playback.
+  const SFX_NAMES = [
+    'strike', 'gunshot', 'hit', 'slash', 'boost', 'hurt', 'power', 'explosion', 'fanfare', 'gameover',
+    'pickup_life', 'pickup_stamina', 'pickup_gloves', 'pickup_longpole', 'pickup_gun',
+    'rabbit_down', 'bird_down', 'hiker_down', 'child_down', 'fatbiker_down', 'reindeer_down', 'snowmobile_down', 'yarddog_down',
+    'bird_screech', 'hiker_throw', 'fatbiker_charge', 'reindeer_charge', 'snowmobile_fire', 'yarddog_bark',
+    'boss_cannon', 'boss_ram', 'boss_throw', 'boss_rev'
+  ];
+  const SFX_GAIN = {
+    strike: 0.35, gunshot: 0.35, hit: 0.32, slash: 0.42, boost: 0.42,
+    hurt: 0.49, power: 0.42, explosion: 0.56, fanfare: 0.49, gameover: 0.5,
+    pickup_life: 0.42, pickup_stamina: 0.42, pickup_gloves: 0.42, pickup_longpole: 0.42, pickup_gun: 0.4,
+    rabbit_down: 0.35, bird_down: 0.35, hiker_down: 0.38, child_down: 0.35,
+    fatbiker_down: 0.4, reindeer_down: 0.4, snowmobile_down: 0.4, yarddog_down: 0.4,
+    bird_screech: 0.3, hiker_throw: 0.3, fatbiker_charge: 0.32, reindeer_charge: 0.35,
+    snowmobile_fire: 0.32, yarddog_bark: 0.35,
+    boss_cannon: 0.35, boss_ram: 0.45, boss_throw: 0.35, boss_rev: 0.45
+  };
+  const ENEMY_DOWN_SFX = {
+    rabbit: 'rabbit_down', bird: 'bird_down', hiker: 'hiker_down', child: 'child_down',
+    fatbiker: 'fatbiker_down', reindeer: 'reindeer_down', snowmobile: 'snowmobile_down', yarddog: 'yarddog_down'
+  };
+
+  const loadSfx = () => {
+    if (!audio.ctx || audio.sfxLoading) return;
+    const missingNames = SFX_NAMES.filter(name => !audio.sfxBuffers[name]);
+    if (missingNames.length === 0) return;
+    audio.sfxLoading = true;
+    Promise.allSettled(missingNames.map(async (name) => {
+      try {
+        const res = await fetch(`assets/audio/sfx/${name}.mp3`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.arrayBuffer();
+        audio.sfxBuffers[name] = await audio.ctx.decodeAudioData(data);
+      } catch (err) {
+        console.warn('SFX load failed:', name, err);
+      }
+    })).finally(() => {
+      audio.sfxLoading = false;
+    });
+  };
+
+  const playBuffer = (name, gain) => {
+    const buffer = audio.sfxBuffers[name];
+    if (!buffer || !audio.ctx) return false;
+    const src = audio.ctx.createBufferSource();
+    src.buffer = buffer;
+    const g = audio.ctx.createGain();
+    g.gain.value = gain;
+    src.connect(g);
+    g.connect(audio.ctx.destination);
+    src.start();
+    return true;
   };
   audio.main.loop = true;
   audio.boss.loop = true;
@@ -152,9 +220,7 @@
     if (audio.ctx.state === 'suspended') {
       audio.ctx.resume();
     }
-    if (!audio.muted) {
-      audio.main.play().catch(() => {});
-    }
+    loadSfx();
   };
 
   const startPlaying = () => {
@@ -182,7 +248,27 @@
     }
   };
 
+  const playMusicForCurrentState = () => {
+    if (audio.muted) {
+      stopAllMusic();
+    } else if (game.state === 'victory') {
+      playMusic(audio.win);
+    } else if (game.state === 'playing' && game.bossActive) {
+      playMusic(audio.boss);
+    } else if (game.state === 'playing' || game.state === 'levelintro') {
+      playMusic(audio.main);
+    } else {
+      stopAllMusic();
+    }
+  };
+
   const playLevelCompleteFanfare = () => {
+    if (!audio.ctx || audio.muted) return;
+    if (playBuffer('fanfare', SFX_GAIN.fanfare)) return;
+    playFanfareSynth();
+  };
+
+  const playFanfareSynth = () => {
     if (!audio.ctx || audio.muted) return;
     const notes = [392, 523.25, 659.25, 783.99, 1046.5];
     const now = audio.ctx.currentTime;
@@ -203,6 +289,12 @@
   };
 
   const playSfx = (type) => {
+    if (!audio.ctx || audio.muted) return;
+    if (playBuffer(type, SFX_GAIN[type] !== undefined ? SFX_GAIN[type] : 0.5)) return;
+    playSfxSynth(type);
+  };
+
+  const playSfxSynth = (type) => {
     if (!audio.ctx || audio.muted) return;
     const now = audio.ctx.currentTime;
     const osc = audio.ctx.createOscillator();
@@ -1142,7 +1234,7 @@
       player.hasGun = false;
       player.shootAnim = 0;
     }
-    playSfx('strike');
+    playSfx('gunshot');
     spawnHitParticles(muzzleX, muzzleY, '#ffd53d', 4);
   };
 
@@ -1194,6 +1286,7 @@
       game.state = 'gameover';
       game.endTimer = 1.2;
       stopAllMusic();
+      playSfx('gameover');
     }
   };
 
@@ -1216,6 +1309,7 @@
       game.score += 100;
       addShake(4, 0.2);
       spawnHitParticles(enemy.x, enemy.y, COLORS.enemyOrange, 14);
+      playSfx(ENEMY_DOWN_SFX[enemy.type] || 'hit');
       if (!player.longPoleActive) {
         game.longPoleKills += 1;
         if (game.longPoleKills >= 5) {
@@ -1275,6 +1369,7 @@
     projectiles.length = 0;
     hazards.length = 0;
     playMusic(audio.boss);
+    playSfx('boss_rev');
   };
 
   const spawnExplosionBurst = (x, y, scale = 1) => {
@@ -1342,6 +1437,7 @@
     });
     boss.throwFxTimer = 0.42;
     boss.throwFxKind = kind;
+    playSfx('boss_throw');
     for (let i = 0; i < 12; i++) {
       particles.push({
         x: px,
@@ -1430,6 +1526,7 @@
         boss.attackY = boss.y;
         boss.attackHitDone = false;
         boss.saltTimer = 0.25;
+        playSfx('boss_ram');
       }
     } else if (boss.pattern === 'ram') {
       boss.weakOpen = 0;
@@ -1444,6 +1541,7 @@
         boss.patternTime = 0;
         boss.saltTimer = 0.18;
         boss.weakOpen = 0.35;
+        playSfx('boss_rev');
       }
     } else if (boss.pattern === 'reverse') {
       boss.weakOpen = 0.25;
@@ -1497,6 +1595,8 @@
     if (boss.patternTimer <= 0) {
       const patterns = ['plow', 'spin', 'cannon'];
       boss.pattern = patterns[randi(0, patterns.length - 1)];
+      if (boss.pattern === 'plow') playSfx('boss_ram');
+      else if (boss.pattern === 'spin') playSfx('boss_rev');
       boss.patternTime = 0;
       boss.plowTimer = 0;
       boss.spinTimer = 0;
@@ -1538,6 +1638,7 @@
       boss.cannonTimer += dt;
       if (boss.cannonTimer > 0.35) {
         boss.cannonTimer = 0;
+        playSfx('boss_cannon');
         const spread = rand(-40, 40);
         projectiles.push({
           x: boss.x - 50,
@@ -1669,6 +1770,7 @@
         if (e.aiTimer <= 0) {
           e.aiTimer = rand(0.8, 1.2);
           e.state = e.state === 'dive' ? 'rise' : 'dive';
+          if (e.state === 'dive') playSfx('bird_screech');
         }
         if (e.state === 'dive') {
           e.vy = 180;
@@ -1682,6 +1784,7 @@
         e.vx = -35;
         if (e.attackTimer <= 0 && Math.abs(player.x - e.x) < 260) {
           e.attackTimer = rand(2.2, 3.2);
+          playSfx('hiker_throw');
           projectiles.push({
             x: e.x - 10,
             y: e.y - 10,
@@ -1715,6 +1818,7 @@
           e.chargeTimer = 0.4;
           e.vx = -200;
           addShake(2, 0.1);
+          playSfx('fatbiker_charge');
         }
         if (e.state === 'charge') {
           e.chargeTimer -= dt;
@@ -1732,6 +1836,7 @@
           e.state = 'charge';
           e.chargeTimer = 0.5;
           e.vx = -260;
+          playSfx('reindeer_charge');
         }
         if (e.state === 'charge') {
           e.chargeTimer -= dt;
@@ -1746,6 +1851,7 @@
         e.vx = -110;
         if (e.attackTimer <= 0 && Math.abs(player.x - e.x) < 320) {
           e.attackTimer = rand(1.6, 2.4);
+          playSfx('snowmobile_fire');
           projectiles.push({
             x: e.x - 12,
             y: e.y - 6,
@@ -1792,6 +1898,7 @@
             e.vx = -285;
             e.vy = clamp(dy * 3.2, -270, 270);
             addShake(2, 0.08);
+            playSfx('yarddog_bark');
           }
         }
       }
@@ -2058,7 +2165,8 @@
           player.hasGun = true;
           player.gunBullets += 20;
         }
-        playSfx('power');
+        const PICKUP_SFX = { thermos: 'pickup_life', energy: 'pickup_stamina', gloves: 'pickup_gloves', longpole: 'pickup_longpole', gun: 'pickup_gun' };
+        playSfx(PICKUP_SFX[it.type] || 'power');
         spawnHitParticles(it.x, it.y, COLORS.uiYellow, 10);
         items.splice(i, 1);
       }
@@ -2737,6 +2845,7 @@
   };
 
   const resetGame = (levelIndex = 0, keepScore = false) => {
+    clearInputState();
     game.levelIndex = levelIndex;
     updateTrackBounds();
     game.state = 'playing';
@@ -2831,7 +2940,7 @@
         stopAllMusic();
       } else {
         initAudio();
-        if (game.state === 'playing') playMusic(game.bossActive ? audio.boss : audio.main);
+        playMusicForCurrentState();
       }
     }
 
